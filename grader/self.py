@@ -334,6 +334,14 @@ def check_scheduler() -> List[Check]:
                         'Thread execution is ordered correctly',
                         success_criteria=lambda code, out: is_expected_output(out, "7 6 5 4 3 2 1 0 3 2 1 0 7 6 5 4"))
 
+def check_semaphore_lock() -> List[Check]:
+	return check_execution('./selfie -c <assignment>mutual-exclusion-sem.c -m 128',
+							'Writes happen sequentially',
+                            success_criteria='Hello World!    ' * 2) + \
+		check_execution('./selfie -c <assignment>mutual-exclusion-lock.c -m 128',
+							'Writes happen sequentially',
+							success_criteria='Hello World!    ' * 2)
+
 assignment_bootstrapping = Assignment('bootstrapping', 'General', '', '', check_bootstrapping)
 assignment_self_compile = Assignment('self-compile', 'General', '', '', check_self_compilation)
 
@@ -408,8 +416,13 @@ assignment_treiber_stack = Assignment('treiber-stack', 'Systems', 'treiber-stack
            REPO_BLOB_BASE_URI + 'grader/systems-assignments.md#assignment-treiber-stack',
            check_treiber_stack, parent = assignment_threadsafe_malloc)
 assignment_scheduler = Assignment('scheduler', 'Systems', 'scheduler',
-            REPO_BLOB_BASE_URI + 'grader/systems-assignmens.md#assignment-treiber-stack',
+            REPO_BLOB_BASE_URI + 'grader/systems-assignments.md#assignment-scheduler',
             check_scheduler, parent = assignment_threads)
+assignment_semaphore_lock = Assignment('semaphore-lock', 'Systems', 'semaphore-lock',
+            REPO_BLOB_BASE_URI + 'grader/systems-assignments.md#assignment-semaphore-lock',
+            check_semaphore_lock, parent = assignment_fork_and_wait)
+
+
 
 assignments: List[Assignment] = [
     assignment_print_your_name,
@@ -433,7 +446,8 @@ assignments: List[Assignment] = [
     assignment_threads,
     assignment_threadsafe_malloc,
     assignment_treiber_stack,
-    assignment_scheduler
+    assignment_scheduler,
+	assignment_semaphore_lock
 ]
 
 

@@ -477,7 +477,6 @@ uint64_t *SYMBOLS; // strings representing symbols
 uint64_t MAX_IDENTIFIER_LENGTH = 64; // maximum number of characters in an identifier
 uint64_t MAX_INTEGER_LENGTH = 20;    // maximum number of characters in an unsigned integer
 uint64_t MAX_STRING_LENGTH = 128;    // maximum number of characters in a string
-
 // ------------------------ GLOBAL VARIABLES -----------------------
 
 char character; // most recently read character
@@ -1299,6 +1298,17 @@ void emit_malloc();
 uint64_t try_brk(uint64_t *context, uint64_t new_program_break);
 void implement_brk(uint64_t *context);
 
+void emit_fork();
+void implement_fork(uint64_t *context);
+
+void emit_sem_init();
+void emit_sem_wait();
+void emit_sem_post();
+
+void implement_sem_init(uint64_t *context);
+void implement_sem_wait(uint64_t *context);
+void implement_sem_post(uint64_t *context);
+
 uint64_t is_boot_level_zero();
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
@@ -1313,6 +1323,10 @@ uint64_t SYSCALL_READ = 63;
 uint64_t SYSCALL_WRITE = 64;
 uint64_t SYSCALL_OPENAT = 56;
 uint64_t SYSCALL_BRK = 214;
+uint64_t SYSCALL_FORK = 23;
+uint64_t SYSCALL_SEM_INIT = 215;
+uint64_t SYSCALL_SEM_WAIT = 216;
+uint64_t SYSCALL_SEM_POST = 217;
 
 /* DIRFD_AT_FDCWD corresponds to AT_FDCWD in fcntl.h and
    is passed as first argument of the openat system call
@@ -2200,6 +2214,7 @@ uint64_t *new_context();
 void init_context(uint64_t *context, uint64_t *parent, uint64_t *vctxt);
 
 uint64_t *find_context(uint64_t *parent, uint64_t *vctxt);
+uint64_t *find_context_by_id(uint64_t id);
 
 void free_context(uint64_t *context);
 uint64_t *delete_context(uint64_t *context, uint64_t *from);
@@ -2241,11 +2256,15 @@ uint64_t *delete_context(uint64_t *context, uint64_t *from);
 // | 30 | gcs counter     | number of gc runs in gc period
 // | 31 | gc enabled      | flag indicating whether to use gc or not
 // +----+-----------------+
+// | 32 | id              | process id
+// | 33 | ptr_parent      | pointer to parent
+// | 34 | blocked		  | process is blocked
+// +----+-----------------+
 
 // number of entries of a machine context:
 // 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries
 // extended in the symbolic execution engine and the Boehm garbage collector
-uint64_t CONTEXTENTRIES = 32;
+uint64_t CONTEXTENTRIES = 35;
 
 uint64_t *allocate_context(); // declaration avoids warning in the Boehm garbage collector
 
@@ -2289,6 +2308,9 @@ uint64_t used_list_head(uint64_t *context) { return (uint64_t)(context + 28); }
 uint64_t free_list_head(uint64_t *context) { return (uint64_t)(context + 29); }
 uint64_t gcs_in_period(uint64_t *context) { return (uint64_t)(context + 30); }
 uint64_t use_gc_kernel(uint64_t *context) { return (uint64_t)(context + 31); }
+uint64_t id(uint64_t *context) { return (uint64_t)(context + 32); }
+uint64_t ptr_parent(uint64_t *context) { return (uint64_t)(context + 33); }
+uint64_t blocked(uint64_t *context) { return (uint64_t)(context + 34); }
 
 uint64_t *get_next_context(uint64_t *context) { return (uint64_t *)*context; }
 uint64_t *get_prev_context(uint64_t *context) { return (uint64_t *)*(context + 1); }
@@ -2325,6 +2347,10 @@ uint64_t *get_free_list_head(uint64_t *context) { return (uint64_t *)*(context +
 uint64_t get_gcs_in_period(uint64_t *context) { return *(context + 30); }
 uint64_t get_use_gc_kernel(uint64_t *context) { return *(context + 31); }
 
+uint64_t get_id(uint64_t *context) { return *(context + 32); }
+uint64_t* get_ptr_parent(uint64_t *context) { return (uint64_t *)*(context + 33); }
+uint64_t get_blocked(uint64_t *context) { return *(context + 34); }
+
 void set_next_context(uint64_t *context, uint64_t *next) { *context = (uint64_t)next; }
 void set_prev_context(uint64_t *context, uint64_t *prev) { *(context + 1) = (uint64_t)prev; }
 void set_pc(uint64_t *context, uint64_t pc) { *(context + 2) = pc; }
@@ -2360,6 +2386,29 @@ void set_free_list_head(uint64_t *context, uint64_t *free_list_head) { *(context
 void set_gcs_in_period(uint64_t *context, uint64_t gcs) { *(context + 30) = gcs; }
 void set_use_gc_kernel(uint64_t *context, uint64_t use) { *(context + 31) = use; }
 
+void set_id(uint64_t *context, uint64_t new_pid) { *(context + 32) = new_pid; }
+void set_ptr_parent(uint64_t *context, uint64_t* parent) { *(context + 33) = (uint64_t)parent; }
+void set_blocked(uint64_t *context, uint64_t blocked) { *(context + 34) = blocked; }
+
+
+// semaphore
+// +---+--------------------+
+// | 0 | value				| semaphore counter value
+// | 1 | n_waiters			| amount of current waiters
+// | 2 | waiters			| array of waiters
+// +---+--------------------+
+
+uint64_t SEMAPHOREENTRIES = 3;
+
+uint64_t get_sem_value(uint64_t *sem) { return *(sem); }
+uint64_t get_sem_n_waiters(uint64_t *sem) { return *(sem + 1); }
+uint64_t *get_sem_waiters(uint64_t *sem) { return (uint64_t *) *(sem + 2); }
+
+void set_sem_value(uint64_t *sem, uint64_t value) { *(sem) = value; }
+void set_sem_n_waiters(uint64_t *sem, uint64_t n_waiters) { *(sem + 1) = n_waiters; }
+void set_sem_waiters (uint64_t *sem, uint64_t *waiters) { *(sem + 2) = (uint64_t) waiters; }
+
+
 // -----------------------------------------------------------------
 // -------------------------- MICROKERNEL --------------------------
 // -----------------------------------------------------------------
@@ -2370,6 +2419,8 @@ uint64_t *create_context(uint64_t *parent, uint64_t *vctxt);
 uint64_t *cache_context(uint64_t *vctxt);
 
 void save_context(uint64_t *context);
+
+uint64_t create_semaphore(uint64_t value);
 
 uint64_t lowest_page(uint64_t page, uint64_t lo);
 uint64_t highest_page(uint64_t page, uint64_t hi);
@@ -2401,6 +2452,10 @@ uint64_t *current_context = (uint64_t *)0; // context currently running
 uint64_t *used_contexts = (uint64_t *)0; // doubly-linked list of used contexts
 uint64_t *free_contexts = (uint64_t *)0; // singly-linked list of free contexts
 
+uint64_t *used_semaphores = (uint64_t *)0; // Array of used semaphores
+
+uint64_t gen_id = 0; // general autoincremente id for processes
+uint64_t next_sem_id = 0; 
 // ------------------------- INITIALIZATION ------------------------
 
 void reset_microkernel()
@@ -2452,6 +2507,7 @@ char *increment_boot_level_prefix(char *s, char *t);
 void boot_loader(uint64_t *context);
 
 uint64_t selfie_run(uint64_t machine);
+uint64_t selfie_run_mipsterOS(uint64_t machine);
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
@@ -6847,6 +6903,12 @@ void selfie_compile()
 
   emit_switch();
 
+  emit_fork();
+
+  emit_sem_init();
+  emit_sem_wait();
+  emit_sem_post();
+
   if (GC_ON)
   {
     emit_fetch_stack_pointer();
@@ -8206,6 +8268,86 @@ void implement_exit(uint64_t *context)
   signed_int_exit_code = *(get_regs(context) + REG_A0);
 
   set_exit_code(context, sign_shrink(signed_int_exit_code, SYSCALL_BITWIDTH));
+
+  used_contexts = delete_context (context, used_contexts);
+}
+
+void emit_fork(){
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("fork"),
+                            0, PROCEDURE, UINT64_T, 0, code_size);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_FORK);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_fork(uint64_t *context){
+  uint64_t *child_c;
+  uint64_t *parent_regs;
+  uint64_t *child_regs;
+  uint64_t it;
+  uint64_t bgn;
+  uint64_t end;
+  uint64_t *parent_pt;
+
+  // 1. new context 
+  child_c = create_context(MY_CONTEXT, 0);
+  set_lowest_lo_page(child_c, get_lowest_lo_page(context));
+  set_highest_lo_page(child_c, get_highest_lo_page(context));
+  set_lowest_hi_page(child_c, get_lowest_hi_page(context));
+  set_highest_hi_page(child_c, get_highest_hi_page(context));
+
+  set_code_seg_start(child_c, get_code_seg_start(context));
+  set_code_seg_size(child_c, get_code_seg_size(context));
+  
+  set_data_seg_start(child_c, get_data_seg_start(context));
+  set_data_seg_size(child_c, get_data_seg_size(context));
+
+  set_heap_seg_start(child_c, get_heap_seg_start(context));
+  set_program_break(child_c, get_program_break(context));
+
+  set_exception(child_c, get_exception(context));
+  set_fault(child_c, get_fault(context));
+  set_exit_code(child_c, get_exit_code(context));
+
+  // 2. copy registers and pc
+  parent_regs = get_regs(context);
+  child_regs = get_regs(child_c);
+  it = 0;
+  while (it<NUMBEROFREGISTERS){
+    *(child_regs+it) = *(parent_regs+it);
+    it = it+1;
+  }
+
+  set_pc(context, get_pc(context)+INSTRUCTIONSIZE);
+  set_pc(child_c, get_pc(context));
+
+  // 3. deep copy
+  parent_pt = get_pt(context);
+  bgn = get_code_seg_start(context);
+  end = get_program_break(context);
+  while (bgn<end){
+    if (is_virtual_address_mapped(parent_pt, bgn))
+      map_and_store(child_c, bgn, load_virtual_memory(parent_pt, bgn));
+    bgn = bgn + WORDSIZE;
+  }
+  
+  bgn = get_virtual_address_of_page_start(get_lowest_hi_page(context));
+  end = HIGHESTVIRTUALADDRESS;
+  while (bgn<end){
+    if (is_virtual_address_mapped(parent_pt, bgn))
+      map_and_store(child_c, bgn, load_virtual_memory(parent_pt, bgn));
+    bgn = bgn + WORDSIZE;
+  }
+
+
+  // 4. values for return
+  *(child_regs+REG_A0) = 0; // return for child is 0
+  *(parent_regs+REG_A0) = get_id(child_c); // return for parent is child's id
+
+  set_ptr_parent(child_c, context);
 }
 
 void emit_read()
@@ -8678,6 +8820,63 @@ void implement_brk(uint64_t *context)
     print_register_hexadecimal(REG_A0);
     println();
   }
+}
+
+void emit_sem_init () {
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("sem_init"),
+                            0, PROCEDURE, VOID_T, 2, code_size);
+
+  emit_load(REG_A0, REG_SP, 0);
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_load(REG_A1, REG_SP, 0);
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_SEM_INIT);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_sem_init (uint64_t *context) {
+  uint64_t sem_id_addr;
+  uint64_t sem_initial_value;
+  uint64_t sem_id;
+
+  sem_id_addr = *(get_regs (context) + REG_A0);
+  sem_initial_value = *(get_regs (context) + REG_A1);
+
+  sem_id = create_semaphore (sem_initial_value);
+
+  map_and_store (context, sem_id_addr, sem_id);
+
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+}
+
+void emit_sem_wait () {
+  // TODO
+}
+
+void implement_sem_wait (uint64_t *context) {
+  uint64_t sem_id_address;
+  uint64_t sem_id;
+  uint64_t *sem;
+
+  // TODO
+}
+
+void emit_sem_post () {
+  // TODO
+}
+
+void implement_sem_post (uint64_t *context) {
+  uint64_t sem_id_address;
+  uint64_t sem_id;
+  uint64_t *sem;
+  uint64_t waiter_idx;
+
+  // TODO
 }
 
 uint64_t is_boot_level_zero()
@@ -10891,21 +11090,33 @@ void do_ecall()
     }
   else
   {
-    read_register(REG_A0);
-
-    if (*(registers + REG_A7) != SYSCALL_EXIT)
-    {
-      if (*(registers + REG_A7) != SYSCALL_BRK)
-      {
-        read_register(REG_A1);
-        read_register(REG_A2);
-
-        if (*(registers + REG_A7) == SYSCALL_OPENAT)
-          read_register(REG_A3);
-      }
-
+    if (*(registers + REG_A7) == SYSCALL_FORK){
       write_register(REG_A0);
     }
+    else 
+    {
+      read_register(REG_A0);
+      
+	  if (*(registers + REG_A7) != SYSCALL_SEM_POST) {
+	  if (*(registers + REG_A7) != SYSCALL_SEM_WAIT) {
+	  if (*(registers + REG_A7) != SYSCALL_EXIT)
+      {
+        if (*(registers + REG_A7) != SYSCALL_BRK)
+        {
+          read_register(REG_A1);
+          if (*(registers + REG_A7) != SYSCALL_SEM_INIT) {
+		  read_register(REG_A2);
+
+          if (*(registers + REG_A7) == SYSCALL_OPENAT)
+            read_register(REG_A3);
+        }
+		}
+
+        write_register(REG_A0);
+      }
+    }
+	}
+	}
 
     // all system calls other than switch are handled by exception
     throw_exception(EXCEPTION_SYSCALL, *(registers + REG_A7));
@@ -11844,21 +12055,24 @@ void print_profile()
 
   printf("%s: --------------------------------------------------------------------------------\n", selfie_name);
   printf("%s: summary: ", selfie_name);
-  if (get_total_number_of_instructions() > 0)
+  if (0==1)
   {
-    printf("%lu executed instructions in total [%lu.%.2lu%% nops]\n",
-           get_total_number_of_instructions(),
-           percentage_format_integral_2(get_total_number_of_instructions(), get_total_number_of_nops()),
-           percentage_format_fractional_2(get_total_number_of_instructions(), get_total_number_of_nops()));
-    printf("%s:          ", selfie_name);
+    if (get_total_number_of_instructions() > 0)
+    {
+      printf("%lu executed instructions in total [%lu.%.2lu%% nops]\n",
+            get_total_number_of_instructions(),
+            percentage_format_integral_2(get_total_number_of_instructions(), get_total_number_of_nops()),
+            percentage_format_fractional_2(get_total_number_of_instructions(), get_total_number_of_nops()));
+      printf("%s:          ", selfie_name);
+    }
+    printf("%lu.%.2luMB mapped memory [%lu.%.2lu%% of %luMB physical memory]\n",
+          ratio_format_integral_2(pused(), MEGABYTE),
+          ratio_format_fractional_2(pused(), MEGABYTE),
+          percentage_format_integral_2(PHYSICALMEMORYSIZE, pused()),
+          percentage_format_fractional_2(PHYSICALMEMORYSIZE, pused()),
+          PHYSICALMEMORYSIZE / MEGABYTE);
   }
-  printf("%lu.%.2luMB mapped memory [%lu.%.2lu%% of %luMB physical memory]\n",
-         ratio_format_integral_2(pused(), MEGABYTE),
-         ratio_format_fractional_2(pused(), MEGABYTE),
-         percentage_format_integral_2(PHYSICALMEMORYSIZE, pused()),
-         percentage_format_fractional_2(PHYSICALMEMORYSIZE, pused()),
-         PHYSICALMEMORYSIZE / MEGABYTE);
-
+  
   down_load_profiles();
 
   context = used_contexts;
@@ -12020,7 +12234,8 @@ void init_context(uint64_t *context, uint64_t *parent, uint64_t *vctxt)
     // pointing to 4KB leaf nodes (page tables) that
     // each accommodate 2^9 (2^12 / 2^3) leaf PTEs
     set_pt(context, zmalloc(NUMBEROFPAGES / NUMBEROFLEAFPTES * sizeof(uint64_t *)));
-
+  
+  set_id(context, gen_id); gen_id = gen_id+1;
   // reset page table cache
   set_lowest_lo_page(context, 0);
   set_highest_lo_page(context, get_lowest_lo_page(context));
@@ -12084,6 +12299,21 @@ uint64_t *find_context(uint64_t *parent, uint64_t *vctxt)
   }
 
   return (uint64_t *)0;
+}
+
+uint64_t *find_context_by_id (uint64_t id) {
+	uint64_t *cur;
+
+	cur = used_contexts;
+	while (cur != (uint64_t *) 0) {
+		if (get_id (cur) == id) {
+			return cur;
+		}
+
+		cur = get_next_context (cur);
+	}
+
+	return (uint64_t *) 0;
 }
 
 void free_context(uint64_t *context)
@@ -12195,6 +12425,28 @@ void save_context(uint64_t *context)
   if (*(get_regs(context) + REG_SP) < get_mc_stack_peak(context))
     // keep track of peak amount of stack allocation
     set_mc_stack_peak(context, *(get_regs(context) + REG_SP));
+}
+
+uint64_t create_semaphore (uint64_t value) {
+	uint64_t *sem;
+	uint64_t sem_id;
+    uint64_t i;
+
+	sem_id = next_sem_id;
+	next_sem_id = next_sem_id + 1;
+	sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);
+
+	set_sem_value (sem, value);
+	set_sem_n_waiters (sem, 0);
+	set_sem_waiters (sem, smalloc (sizeof (uint64_t) * 64)); // At most 64 waiters
+
+	i = 0;
+	while (i < 64) {
+      *(get_sem_waiters (sem) + i) = -1;
+	  i = i + 1;
+	}
+
+	return sem_id;
 }
 
 uint64_t lowest_page(uint64_t page, uint64_t lo)
@@ -12693,9 +12945,16 @@ uint64_t handle_system_call(uint64_t *context)
   {
     implement_exit(context);
 
-    // TODO: exit only if all contexts have exited
-    return EXIT;
-  }
+    if (used_contexts == (uint64_t *) 0)
+		return EXIT;
+  } else if (a7 == SYSCALL_FORK)
+    implement_fork(context);
+  else if (a7 == SYSCALL_SEM_INIT)
+    implement_sem_init(context);
+  else if (a7 == SYSCALL_SEM_WAIT)
+    implement_sem_wait(context);
+  else if (a7 == SYSCALL_SEM_POST)
+    implement_sem_post(context);
   else
   {
     printf("%s: unknown system call %lu\n", selfie_name, a7);
@@ -12806,6 +13065,8 @@ uint64_t mipster(uint64_t *to_context)
   {
     from_context = mipster_switch(to_context, timeout);
 
+    to_context = get_next_context(from_context);
+
     if (get_parent(from_context) != MY_CONTEXT)
     {
       // switch to parent which is in charge of handling exceptions
@@ -12817,10 +13078,18 @@ uint64_t mipster(uint64_t *to_context)
       return get_exit_code(from_context);
     else
     {
-      to_context = get_next_context(from_context);
-      if (to_context == (uint64_t *)0)
-        to_context = used_contexts;
+		to_context = from_context;
+		to_context = get_next_context (to_context);
 
+	    if (to_context == (uint64_t *)0)
+    	  to_context = used_contexts;
+		while (get_blocked (to_context) == 1) {	// Skip blocked contexts
+		 to_context = get_next_context (to_context);
+
+	      if (to_context == (uint64_t *)0)
+    	    to_context = used_contexts;
+ 
+	  	}
       timeout = TIMESLICE;
     }
   }
@@ -13163,6 +13432,9 @@ uint64_t selfie_run(uint64_t machine)
 
   run = 1;
 
+  // Initialize array of semaphores
+  used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
+
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
          SIZEOFUINT64INBITS,
          (char *)*(MACHINES + machine),
@@ -13227,6 +13499,104 @@ uint64_t selfie_run(uint64_t machine)
 
   return exit_code;
 }
+
+
+
+uint64_t selfie_run_mipsterOS(uint64_t machine)
+{
+  uint64_t exit_code;
+  uint64_t number;
+
+  if (code_size == 0)
+  {
+    printf("%s: nothing to run, debug, or host\n", selfie_name);
+
+    return EXITCODE_BADARGUMENTS;
+  }
+  else if (machine == HYPSTER)
+  {
+    if (OS != SELFIE)
+    {
+      printf("%s: hypster only runs on mipster\n", selfie_name);
+
+      return EXITCODE_BADARGUMENTS;
+    }
+  }
+
+  reset_interpreter();
+  reset_profiler();
+  reset_microkernel();
+
+  init_memory(atoi(peek_argument(0)));
+  number = atoi(peek_argument(0));
+
+  while (number>0){
+    current_context = create_context(MY_CONTEXT, 0);
+    boot_loader(current_context);
+    number = number-1;
+  }
+  
+
+  run = 1;
+
+  printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
+         SIZEOFUINT64INBITS,
+         (char *)*(MACHINES + machine),
+         WORDSIZEINBITS,
+         binary_name,
+         PHYSICALMEMORYSIZE / MEGABYTE);
+
+  if (GC_ON)
+  {
+    gc_init(current_context);
+
+    printf(", gcing every %lu mallocs, ", GC_PERIOD);
+    if (GC_REUSE)
+      printf("reusing memory");
+    else
+      printf("not reusing memory");
+  }
+
+  if (debug)
+  {
+    if (record)
+      printf(", and replay");
+    else
+      printf(", and debugger");
+  }
+
+  printf("\n%s: >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n\n", selfie_name);
+
+  if (machine == MIPSTER)
+    exit_code = mipster(current_context);
+  else if (machine == HYPSTER)
+    exit_code = hypster(current_context);
+  else
+    exit_code = 0;
+
+  printf("\n%s: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", selfie_name);
+
+  printf("%s: %lu-bit %s terminating %lu-bit RISC-U binary %s with exit code %ld\n", selfie_name,
+         SIZEOFUINT64INBITS,
+         (char *)*(MACHINES + machine),
+         WORDSIZEINBITS,
+         binary_name,
+         sign_extend(exit_code, SYSCALL_BITWIDTH));
+
+  print_profile();
+
+  run = 0;
+
+  record = 0;
+
+  debug_syscalls = 0;
+  debug = 0;
+
+  printf("%s: ################################################################################\n", selfie_name);
+
+  return exit_code;
+}
+
 
 // -----------------------------------------------------------------
 // ------------------- CONSOLE ARGUMENT SCANNER --------------------
@@ -13335,6 +13705,8 @@ uint64_t selfie(uint64_t extras)
       {
         if (string_compare(argument, "-m"))
           return selfie_run(MIPSTER);
+        else if (string_compare(argument, "-x")) 
+          return selfie_run_mipsterOS(MIPSTER);
         else if (string_compare(argument, "-d"))
           return selfie_run(DIPSTER);
         else if (string_compare(argument, "-r"))
