@@ -1315,6 +1315,14 @@ void implement_lock_init(uint64_t *context);
 void implement_lock_acquire(uint64_t *context);
 void implement_lock_release(uint64_t *context);
 
+void emit_cond_init();
+void emit_cond_wait();
+void emit_cond_signal();
+
+void implement_cond_init(uint64_t *context);
+void implement_cond_wait(uint64_t *context);
+void implement_cond_signal(uint64_t *context);
+
 uint64_t is_boot_level_zero();
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
@@ -1343,6 +1351,10 @@ uint64_t SYSCALL_SEM_POST = 224;
 uint64_t SYSCALL_LOCK_INIT = 225;
 uint64_t SYSCALL_LOCK_ACQUIRE = 226;
 uint64_t SYSCALL_LOCK_RELEASE = 227;
+
+uint64_t SYSCALL_COND_INIT = 768;
+uint64_t SYSCALL_COND_WAIT = 769;
+uint64_t SYSCALL_COND_SIGNAL = 770;
 
 /* DIRFD_AT_FDCWD corresponds to AT_FDCWD in fcntl.h and
    is passed as first argument of the openat system call
@@ -2259,13 +2271,13 @@ void unblock_context(uint64_t* context);
 // | 30 | gcs counter     | number of gc runs in gc period
 // | 31 | gc enabled      | flag indicating whether to use gc or not
 // +----+-----------------+
-// | 32 | pid				| process id of this context
-// | 33 | parent process	| context of parent process
-// | 34 | process state	| current execution state of processss
+// | 32 | pid				          | process id of this context
+// | 33 | parent process  	  | context of parent process
+// | 34 | process state	      | current execution state of processss
 // | 35 | number of children	| number of forked children
-// | 36 | child exit code		| exit status code of last exited child
-// | 37 | child pid				| pid of exited child
-// | 38 | tg leader		| true if thread is tg leader (main process)
+// | 36 | child exit code		  | exit status code of last exited child
+// | 37 | child pid				    | pid of exited child
+// | 38 | tg leader		        | true if thread is tg leader (main process)
 // | 39 | tg				| thread group id
 // | 40 | tg_next		| get next thread in tg list
 // | 41 | blocked		| proces is blocked
@@ -2444,6 +2456,41 @@ void set_sem_n_waiters(uint64_t *sem, uint64_t n_waiters) { *(sem + 1) = n_waite
 void set_sem_waiters (uint64_t *sem, uint64_t *waiters) { *(sem + 2) = (uint64_t) waiters; }
 
 uint64_t create_semaphore(uint64_t value);
+
+
+// LOCK STRUCT
+// +---+--------------------+
+// | 0 | semaphore				| id del semaforo
+// | 1 | owner			      | id del propietario
+// +---+--------------------+
+
+uint64_t LOCKENTRIES = 2;
+uint64_t get_lock_sem(uint64_t *lock) { return *(lock); }
+uint64_t get_lock_owner(uint64_t *lock) { return *(lock + 1); }
+
+void set_lock_sem(uint64_t *lock, uint64_t sem) { *(lock) = sem; }
+void set_lock_owner(uint64_t *lock, uint64_t owner) { *(lock + 1) = owner; }
+
+uint64_t create_lock();
+
+
+
+
+// cond variable
+// +---+--------------------+
+// | 0 | n_waiters			|      number of waiters
+//   1   waiters        |      array of waiters
+// +---+--------------------+
+uint64_t CONDENTRIES = 2;
+
+uint64_t get_cond_n_waiters(uint64_t *cond){return *(cond)}
+uint64_t *get_cond_waiters(uint64_t *cond) { return (uint64_t *) *(cond + 1); }
+
+void set_cond_n_waiters(uint64_t *cond, uint64_t val){*(cond) = val;}
+void set_cond_waiters (uint64_t *cond, uint64_t *waiters) { *(cond+1) = (uint64_t) waiters; }
+
+uint64_t create_cond();
+
 // -----------------------------------------------------------------
 // -------------------------- MICROKERNEL --------------------------
 // -----------------------------------------------------------------
@@ -2495,12 +2542,17 @@ uint64_t* thread_group_ctr = (uint64_t*) 0;	// Array of tg ids indicating number
 uint64_t next_pid = 0;	// next process id (incremental)
 uint64_t *used_semaphores = (uint64_t *)0; // Array of used semaphores
 uint64_t next_sem_id = 0;
+uint64_t *used_cond = (uint64_t *)0;
+uint64_t next_cond_id = 0;
+// LOCK
+uint64_t* used_locks = (uint64_t*) 0; // array of locks
+uint64_t next_lock_id = 0;
 
 // ------------------------- INITIALIZATION ------------------------
 
 void reset_microkernel() {
   current_context = (uint64_t*) 0;
-
+ 
   while (used_contexts != (uint64_t*) 0)
     used_contexts = delete_context(used_contexts, used_contexts);
 }
@@ -6437,6 +6489,10 @@ void selfie_compile() {
   emit_lock_acquire();
   emit_lock_release();
 
+  emit_cond_init();
+  emit_cond_wait();
+  emit_cond_signal();
+
   emit_open();
 
   emit_malloc();
@@ -7874,6 +7930,123 @@ void emit_write() {
   emit_jalr(REG_ZR, REG_RA, 0);
 }
 
+void emit_cond_init(){
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("cond_init"),
+    0, PROCEDURE, UINT64_T, 1, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // variable
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_COND_INIT);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+
+void implement_cond_init (uint64_t *context) {
+  uint64_t cond_id_addr;
+  uint64_t cond_id;
+
+  cond_id_addr = *(get_regs (context) + REG_A0);
+
+  sem_id = create_cond();
+
+  map_and_store (context, cond_id_addr, cond_id);
+
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+}
+
+void emit_cond_wait(){
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("cond_wait"),
+    0, PROCEDURE, UINT64_T, 2, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // cond vari
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_load(REG_A1, REG_SP, 0); // lock var
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_COND_WAIT);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+
+
+void implement_cond_wait (uint64_t *context) {
+  uint64_t cond_id_address;
+  uint64_t cond_id;
+  uint64_t *cond;
+  uint64_t lock_id_addr;
+  uint64_t lock_id;
+  uint64_t *lock;
+  uint64_t sem_id;
+  uint64_t owner_id;
+  uint64_t curr_context_id;
+  uint64_t *sem;
+  
+  lock_id_addr = *(get_regs (context) + REG_A1);
+  lock_id = load_virtual_memory(get_pt(context), lock_id_addr);
+
+  cond_id_address = *(get_regs (context) + REG_A0);
+  cond_id = load_virtual_memory (get_pt (context), cond_id_address);
+  cond = used_cond + (cond_id * CONDENTRIES);
+
+  //release lock
+  sem_id = get_lock_sem(lock);
+  owner_id = get_lock_owner(lock);
+  curr_context_id = get_pid(current_context);
+  sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);
+  set_sem_value(sem,get_sem_value(sem) + 1);
+
+  //TO DO
+  
+  //add to waiters this process
+  set_cond_n_waiters(cond, get_cond_waiters(cond) + 1);
+  *(get_cond_waiters (cond) + get_cond_n_waiters (cond)) = get_pid (context); //append to end
+  set_blocked(context, 1);
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+}
+
+
+void emit_cond_signal(){
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("cond_signal"),
+    0, PROCEDURE, UINT64_T, 1, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // cond vari
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_COND_SIGNAL);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_cond_signal (uint64_t *context) {
+  uint64_t cond_id_address;
+  uint64_t cond_id;
+  uint64_t *cond;
+  uint64_t n;
+  uint64_t wake_pid;
+  cond_id_address = *(get_regs (context) + REG_A0);
+  cond_id = load_virtual_memory (get_pt (context), cond_id_address);
+  cond = used_cond + (cond_id * CONDENTRIES);
+  n = get_cond_n_waiters(cond);
+  //wake up one process only if there are waiters
+  if(n>0){
+    //rm to waiters this process
+    set_cond_n_waiters(cond, get_cond_waiters(cond) - 1);
+    wake_pid = *(get_cond_waiters (cond) + get_cond_n_waiters (cond));
+    set_blocked(find_context_by_id(wake_pid), 0);
+  }  
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+}
+//LIFO
 void implement_write(uint64_t* context) {
   // parameters
   uint64_t fd;
@@ -8507,29 +8680,117 @@ void implement_sem_post (uint64_t *context) {
 }
 
 void emit_lock_init() {
-	// TODO
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("lock_init"),
+    0, PROCEDURE, UINT64_T, 1, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // lock
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_LOCK_INIT);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
 }
 
 void implement_lock_init(uint64_t *context) {
-	// TODO
+
+  uint64_t lock_id_addr;
+  uint64_t lock_id;
+
+  lock_id_addr = *(get_regs (context) + REG_A0);
+
+  lock_id = create_lock();
+
+  map_and_store (context, lock_id_addr, lock_id);
+
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 }
 
 void emit_lock_acquire () {
-	// TODO
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("lock_acquire"),
+    0, PROCEDURE, UINT64_T, 1, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // lock
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_LOCK_ACQUIRE);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
 }
 
 void implement_lock_acquire (uint64_t *context) {
-	// TODO
+  uint64_t lock_id_address;
+  uint64_t lock_id;
+  uint64_t sem_id;
+  uint64_t owner_id;
+  uint64_t *lock;
+  uint64_t *sem;
+
+  lock_id_address = *(get_regs (context) + REG_A0);
+  lock_id = load_virtual_memory (get_pt (context), lock_id_address);
+  lock = used_locks + (lock_id * LOCKENTRIES);
+  
+  sem_id = get_lock_sem(lock);
+  owner_id = get_lock_owner(lock);
+
+  sem = used_semaphores + (sem_id * SEMENTSEMAPHOREENTRIESRIES);  
+
+  if (get_sem_value (sem) == 0) {
+    set_blocked (context, 1);
+//    set_sem_n_waiters (sem, get_sem_n_waiters (sem) + 1);
+//    *(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
+  } else {
+      set_sem_value(sem, get_sem_value(sem) - 1); // 0
+  }
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+
 }
 
 void emit_lock_release () {
-	// TODO
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("lock_release"),
+    0, PROCEDURE, UINT64_T, 1, code_size);
+
+  emit_load(REG_A0, REG_SP, 0); // lock
+  emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_LOCK_RELEASE);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
 }
 
 void implement_lock_release (uint64_t *context) {
-	// TODO
-}
+  uint64_t lock_id_address;
+  uint64_t lock_id;
+  uint64_t curr_context_id;
+  uint64_t *lock;
+  uint64_t sem_id;
+  uint64_t owner_id;
+  uint64_t curr_context_id;
+  uint64_t *sem;
 
+  lock_id_address = *(get_regs (context) + REG_A0);
+  lock_id = load_virtual_memory (get_pt (context), lock_id_address);
+  lock = used_locks + (lock_id * LOCKENTRIES);
+  
+  sem_id = get_lock_sem(lock);
+  owner_id = get_lock_owner(lock);
+  curr_context_id = get_pid(current_context);
+
+  sem = used_semaphores + (sem_id * SEMAPHOREENTRIES); 
+
+  if (owner_id != curr_context_id) {
+    // solo se salta la instrucción
+  } else {
+  	set_sem_value (sem, get_sem_value (sem) + 1);
+  }
+
+  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+}
 // -----------------------------------------------------------------
 // ------------------------ HYPSTER SYSCALL ------------------------
 // -----------------------------------------------------------------
@@ -10492,46 +10753,57 @@ void do_ecall() {
 
       implement_switch();
     }
-  else {
-    if (*(registers + REG_A7) != SYSCALL_FORK) {
-        if (*(registers + REG_A7) != SYSCALL_PT_CREATE) {
-            read_register(REG_A0);
-			if (*(registers + REG_A7) != SYSCALL_SEM_POST) {
-			if (*(registers + REG_A7) != SYSCALL_SEM_WAIT) {
-			if (*(registers + REG_A7) != SYSCALL_LOCK_INIT) {
-			if (*(registers + REG_A7) != SYSCALL_LOCK_ACQUIRE) {
-			if (*(registers + REG_A7) != SYSCALL_LOCK_RELEASE) {
-            if (*(registers + REG_A7) != SYSCALL_EXIT) {
-              if (*(registers + REG_A7) != SYSCALL_PT_EXIT) {
-                if (*(registers + REG_A7) != SYSCALL_BRK) {
-                  if (*(registers + REG_A7) != SYSCALL_WAIT) {
-                    if (*(registers + REG_A7) != SYSCALL_PT_JOIN) {
-                        read_register(REG_A1);
-                        if (*(registers + REG_A7) != SYSCALL_SEM_INIT) {
-							read_register(REG_A2);
+    else {
+      if(*(registers + REG_A7) == SYSCALL_COND_INIT){
+        read_register(REG_A0);
+      }
+      else if(*(registers + REG_A7) == SYSCALL_COND_WAIT){
+        read_register(REG_A0);
+        read_register(REG_A1);
+      }
+      else if(*(registers + REG_A7) == SYSCALL_COND_SIGNAL){
+        read_register(REG_A0);
+      }
+      else{
+      if (*(registers + REG_A7) != SYSCALL_FORK) {
+          if (*(registers + REG_A7) != SYSCALL_PT_CREATE) {
+              read_register(REG_A0);
+        if (*(registers + REG_A7) != SYSCALL_SEM_POST) {
+        if (*(registers + REG_A7) != SYSCALL_SEM_WAIT) {
+        if (*(registers + REG_A7) != SYSCALL_LOCK_INIT) {
+        if (*(registers + REG_A7) != SYSCALL_LOCK_ACQUIRE) {
+        if (*(registers + REG_A7) != SYSCALL_LOCK_RELEASE) {
+              if (*(registers + REG_A7) != SYSCALL_EXIT) {
+                if (*(registers + REG_A7) != SYSCALL_PT_EXIT) {
+                  if (*(registers + REG_A7) != SYSCALL_BRK) {
+                    if (*(registers + REG_A7) != SYSCALL_WAIT) {
+                      if (*(registers + REG_A7) != SYSCALL_PT_JOIN) {
+                          read_register(REG_A1);
+                          if (*(registers + REG_A7) != SYSCALL_SEM_INIT) {
+                read_register(REG_A2);
 
-                        	if (*(registers + REG_A7) == SYSCALL_OPENAT)
-                        	read_register(REG_A3);
-						}
+                            if (*(registers + REG_A7) == SYSCALL_OPENAT)
+                            read_register(REG_A3);
+              }
+                        }
                       }
                     }
                   }
+
+                  write_register(REG_A0);
                 }
-
-                write_register(REG_A0);
-              }
-			}
-		  }
-		  }
         }
-		}
-		}
+        }
+        }
+          }
+      }
+      }
+      }
+      
     }
-    
-
-    // all system calls other than switch are handled by exception
-    throw_exception(EXCEPTION_SYSCALL, *(registers + REG_A7));
-  }
+      // all system calls other than switch are handled by exception
+      throw_exception(EXCEPTION_SYSCALL, *(registers + REG_A7));
+}
 }
 
 void undo_ecall() {
@@ -11639,7 +11911,7 @@ void unblock_context(uint64_t* context) {
 uint64_t create_semaphore (uint64_t value) {
 	uint64_t *sem;
 	uint64_t sem_id;
-    uint64_t i;
+  uint64_t i;
 
 	sem_id = next_sem_id;
 	next_sem_id = next_sem_id + 1;
@@ -11657,6 +11929,46 @@ uint64_t create_semaphore (uint64_t value) {
 
 	return sem_id;
 }
+
+uint64_t create_lock () {
+	uint64_t *lock;
+	uint64_t lock_id;
+	uint64_t sem_id;
+  uint64_t context_id;
+
+	lock_id = next_lock_id;
+	next_lock_id = next_lock_id + 1;
+	lock = used_locks + (lock_id * LOCKENTRIES);
+
+  sem_id = create_semaphore(1);
+  context_id = get_pid(current_context)
+
+	set_lock_sem(lock, sem_id);
+	set_lock_owner(lock, context_id);
+
+	return lock_id;
+}
+
+uint64_t create_cond () {
+	uint64_t *cond;
+	uint64_t cond_id;
+  uint64_t i;
+
+	cond_id = next_cond_id;
+	next_cond_id = next_cond_id + 1;
+	cond = used_cond + (cond_id * CONDENTRIES);
+  set_cond_n_waiters (cond, 0);
+	set_cond_waiters (cond, smalloc (sizeof (uint64_t) * 64)); // At most 64 waiters
+
+	i = 0;
+	while (i < 64) {
+      *(get_cond_waiters (cond) + i) = -1;
+	  i = i + 1;
+	}
+
+	return cond_id;
+}
+
 
 // -----------------------------------------------------------------
 // -------------------------- MICROKERNEL --------------------------
@@ -12308,6 +12620,12 @@ uint64_t handle_system_call(uint64_t* context) {
     implement_lock_acquire(context);
   else if (a7 == SYSCALL_LOCK_RELEASE)
     implement_lock_release(context);
+  else if(a7 == SYSCALL_COND_INIT)
+    implement_cond_init(context);
+  else if(a7 == SYSCALL_COND_SIGNAL)
+    implement_cond_signal(context);
+  else if(a7 == SYSCALL_COND_WAIT)
+    implement_cond_wait(context);
   else if (a7 == SYSCALL_EXIT) {
     implement_exit(context);
 
@@ -12424,7 +12742,7 @@ uint64_t mipster(uint64_t* to_context) {
 		to_context = used_contexts;
 	  } else if (get_status(to_context) == STATUS_FREED) {
 		to_context = used_contexts;
-	  } else {
+	  } else {  
 		while (get_blocked (to_context) == 1) {	// Skip blocked contexts
 		 to_context = get_next_context (to_context);
 
@@ -12762,7 +13080,9 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
 
   run = 1;
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
-
+  used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
+  used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
+  
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
     SIZEOFUINT64INBITS,
     (char*) *(MACHINES + machine),
