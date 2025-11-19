@@ -216,6 +216,8 @@ uint64_t* zmalloc(uint64_t size); // use this to allocate zeroed memory
 
 char* SELFIE_URL = (char*) 0;
 
+uint64_t seed = 5; //random seed
+
 uint64_t IS64BITSYSTEM = 1; // flag indicating 64-bit selfie
 uint64_t IS64BITTARGET = 1; // flag indicating 64-bit target
 
@@ -2044,6 +2046,10 @@ uint64_t TIMEROFF = 0; // must be 0 to turn off timer interrupt
 
 // ------------------------ GLOBAL VARIABLES -----------------------
 
+//random global struct
+uint64_t* random = (uint64_t *)0;
+
+
 // hardware thread state
 
 uint64_t pc = 0; // program counter
@@ -2216,6 +2222,7 @@ void reset_profiler() {
 // ----------------------    R U N T I M E    ----------------------
 // -----------------------------------------------------------------
 // *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~
+
 
 // -----------------------------------------------------------------
 // ------------------------ MACHINE CONTEXTS -----------------------
@@ -2458,6 +2465,36 @@ void set_sem_waiters (uint64_t *sem, uint64_t *waiters) { *(sem + 2) = (uint64_t
 uint64_t create_semaphore(uint64_t value);
 
 
+// random global struct
+// +---+--------------------+
+// | 0 | pos				| pos of next random number
+// | 1 | n_numbers			| array of random numbers
+// +---+--------------------+
+//size of random numbers defined in global constant 
+uint64_t RANDOM_ENTRIES = 2;
+uint64_t RANDOM_NUMBERS_LENGTH = 10; //max random numbers to generate, after that it will start from the beggining
+uint64_t get_next_random_pos(){return *(random);}
+uint64_t *get_random_number_arr(){return (uint64_t *) *(random + 1);}
+
+void set_next_random_pos(){*(random) = (*(random) + 1)%RANDOM_NUMBERS_LENGTH;}
+void set_random_number_arr(uint64_t m){ //m is N_CONTEXTS, dynamically changes during exec
+  uint64_t a;
+  uint64_t c;
+  uint64_t i; 
+  uint64_t* random_arr;
+  a = 3;
+  c = 3;
+  m = 7;
+  random_arr = get_random_number_arr();
+  *(random_arr) = seed;
+  i = 1;
+  while(i < RANDOM_NUMBERS_LENGTH){
+    *(random + i) = (*(random + i - 1) * a + c) % m; 
+      i++;
+
+  }
+}
+
 // LOCK STRUCT
 // +---+--------------------+
 // | 0 | semaphore				| id del semaforo
@@ -2531,7 +2568,6 @@ uint64_t debug_create = 0;
 uint64_t debug_map    = 0;
 
 // ------------------------ GLOBAL VARIABLES -----------------------
-
 uint64_t* current_context = (uint64_t*) 0; // context currently running
 
 uint64_t* used_contexts = (uint64_t*) 0; // doubly-linked list of used contexts
@@ -2547,6 +2583,12 @@ uint64_t next_cond_id = 0;
 // LOCK
 uint64_t* used_locks = (uint64_t*) 0; // array of locks
 uint64_t next_lock_id = 0;
+
+//scheduler mode: 
+//0 -> rr
+//1 -> random
+//2 -> CFS
+uint64_t sched_mode = 0;
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -2582,6 +2624,8 @@ uint64_t handle_exception(uint64_t* context);
 
 uint64_t mipster(uint64_t* to_context);
 uint64_t hypster(uint64_t* to_context);
+void rr_scheduler(uint64_t* to_context);
+void random_scheduler(uint64_t* to_context);
 
 uint64_t mixter(uint64_t* to_context, uint64_t mix);
 
@@ -11841,7 +11885,7 @@ uint64_t* delete_context(uint64_t* context, uint64_t* from) {
   free_context(context);
 
   N_CONTEXTS = N_CONTEXTS - 1;
-
+  set_random_number_arr(N_CONTEXTS); //recalculate random numbers for random scheduler
   return from;
 }
 
@@ -11986,7 +12030,7 @@ uint64_t* create_context(uint64_t* parent, uint64_t* vctxt) {
       get_name(parent), get_name(used_contexts));
 
   N_CONTEXTS = N_CONTEXTS + 1;
-
+  set_random_number_arr(N_CONTEXTS); //RECALCULATE rand numbers for scheduler
   return context;
 }
 
@@ -12720,25 +12764,8 @@ uint64_t handle_exception(uint64_t* context) {
   }
 }
 
-uint64_t mipster(uint64_t* to_context) {
-  uint64_t timeout;
-  uint64_t* from_context;
-
-  timeout = TIMESLICE;
-
-  while (1) {
-    from_context = mipster_switch(to_context, timeout);
-
-    if (get_parent(from_context) != MY_CONTEXT) {
-      // switch to parent which is in charge of handling exceptions
-      to_context = get_parent(from_context);
-
-      timeout = TIMEROFF;
-    } else if (handle_exception(from_context) == EXIT)
-      return get_exit_code(from_context);
-    else {
-      // TODO: scheduler should go here
-      if (get_next_context(to_context) == (uint64_t *) 0) {
+void rr_scheduler(uint64_t* to_context){
+  if (get_next_context(to_context) == (uint64_t *) 0) {
         to_context = used_contexts;
       } else if (get_status(to_context) == STATUS_FREED) {
         to_context = used_contexts;
@@ -12752,9 +12779,55 @@ uint64_t mipster(uint64_t* to_context) {
         }
       }
 
+}
+
+// void random_scheduler(uint64_t* to_context){
+//   //TO DO..
+//   to_;
+// }
+
+uint64_t mipster(uint64_t* to_context) {
+  uint64_t timeout;
+  uint64_t* from_context;
+
+  timeout = TIMESLICE;
+
+  while (1) { //executes code
+    from_context = mipster_switch(to_context, timeout);
+
+    if (get_parent(from_context) != MY_CONTEXT) {
+      // switch to parent which is in charge of handling exceptions
+      to_context = get_parent(from_context);
+
+      timeout = TIMEROFF;
+    } else if (handle_exception(from_context) == EXIT)
+      return get_exit_code(from_context);
+    else {
+      if(sched_mode == 0){
+        rr_scheduler(to_context);
+      }
+      
 	  //to_context = from_context;
-      timeout = TIMESLICE;
+    timeout = TIMESLICE;
 	  set_status(to_context, STATUS_RUNNING);
+    //   // TODO: scheduler should go here
+    //   if (get_next_context(to_context) == (uint64_t *) 0) {
+    //     to_context = used_contexts;
+    //   } else if (get_status(to_context) == STATUS_FREED) {
+    //     to_context = used_contexts;
+    //   } else {  
+    //   while (get_blocked (to_context) == 1) {	// Skip blocked contexts
+    //   to_context = get_next_context (to_context);
+
+    //       if (to_context == (uint64_t *)0)
+    //         to_context = used_contexts;
+  
+    //     }
+    //   }
+
+	  // //to_context = from_context;
+    //   timeout = TIMESLICE;
+	  // set_status(to_context, STATUS_RUNNING);
     }
   }
 }
@@ -13079,6 +13152,7 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   // current_context is ready to run
 
   run = 1;
+  random = smalloc(RANDOM_NUMBERS_LENGTH * sizeof(uint64_t) * RANDOM_ENTRIES);
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
   used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
   used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
