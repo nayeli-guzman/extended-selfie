@@ -2483,7 +2483,7 @@ uint64_t create_lock();
 // +---+--------------------+
 uint64_t CONDENTRIES = 2;
 
-uint64_t get_cond_n_waiters(uint64_t *cond){return *(cond)}
+uint64_t get_cond_n_waiters(uint64_t *cond){return *(cond);}
 uint64_t *get_cond_waiters(uint64_t *cond) { return (uint64_t *) *(cond + 1); }
 
 void set_cond_n_waiters(uint64_t *cond, uint64_t val){*(cond) = val;}
@@ -7951,7 +7951,7 @@ void implement_cond_init (uint64_t *context) {
 
   cond_id_addr = *(get_regs (context) + REG_A0);
 
-  sem_id = create_cond();
+  cond_id = create_cond();
 
   map_and_store (context, cond_id_addr, cond_id);
 
@@ -7985,12 +7985,14 @@ void implement_cond_wait (uint64_t *context) {
   uint64_t lock_id;
   uint64_t *lock;
   uint64_t sem_id;
-  uint64_t owner_id;
-  uint64_t curr_context_id;
+  // uint64_t owner_id;
+  // uint64_t curr_context_id;
   uint64_t *sem;
   
   lock_id_addr = *(get_regs (context) + REG_A1);
   lock_id = load_virtual_memory(get_pt(context), lock_id_addr);
+  lock = used_locks + (lock_id * LOCKENTRIES);
+
 
   cond_id_address = *(get_regs (context) + REG_A0);
   cond_id = load_virtual_memory (get_pt (context), cond_id_address);
@@ -7998,15 +8000,15 @@ void implement_cond_wait (uint64_t *context) {
 
   //release lock
   sem_id = get_lock_sem(lock);
-  owner_id = get_lock_owner(lock);
-  curr_context_id = get_pid(current_context);
+  //owner_id = get_lock_owner(lock);
+  // curr_context_id = get_pid(current_context);
   sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);
   set_sem_value(sem,get_sem_value(sem) + 1);
 
   //TO DO
   
   //add to waiters this process
-  set_cond_n_waiters(cond, get_cond_waiters(cond) + 1);
+  set_cond_n_waiters(cond, get_cond_n_waiters(cond) + 1);
   *(get_cond_waiters (cond) + get_cond_n_waiters (cond)) = get_pid (context); //append to end
   set_blocked(context, 1);
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
@@ -8040,7 +8042,7 @@ void implement_cond_signal (uint64_t *context) {
   //wake up one process only if there are waiters
   if(n>0){
     //rm to waiters this process
-    set_cond_n_waiters(cond, get_cond_waiters(cond) - 1);
+    set_cond_n_waiters(cond, get_cond_n_waiters(cond) - 1);
     wake_pid = *(get_cond_waiters (cond) + get_cond_n_waiters (cond));
     set_blocked(find_context_by_id(wake_pid), 0);
   }  
@@ -8725,7 +8727,7 @@ void implement_lock_acquire (uint64_t *context) {
   uint64_t lock_id_address;
   uint64_t lock_id;
   uint64_t sem_id;
-  uint64_t owner_id;
+  // uint64_t owner_id;
   uint64_t *lock;
   uint64_t *sem;
 
@@ -8734,9 +8736,9 @@ void implement_lock_acquire (uint64_t *context) {
   lock = used_locks + (lock_id * LOCKENTRIES);
   
   sem_id = get_lock_sem(lock);
-  owner_id = get_lock_owner(lock);
+  // owner_id = get_lock_owner(lock);
 
-  sem = used_semaphores + (sem_id * SEMENTSEMAPHOREENTRIESRIES);  
+  sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);  
 
   if (get_sem_value (sem) == 0) {
     set_blocked (context, 1);
@@ -8770,7 +8772,6 @@ void implement_lock_release (uint64_t *context) {
   uint64_t *lock;
   uint64_t sem_id;
   uint64_t owner_id;
-  uint64_t curr_context_id;
   uint64_t *sem;
 
   lock_id_address = *(get_regs (context) + REG_A0);
@@ -11941,7 +11942,7 @@ uint64_t create_lock () {
 	lock = used_locks + (lock_id * LOCKENTRIES);
 
   sem_id = create_semaphore(1);
-  context_id = get_pid(current_context)
+  context_id = get_pid(current_context);
 
 	set_lock_sem(lock, sem_id);
 	set_lock_owner(lock, context_id);
@@ -12738,19 +12739,19 @@ uint64_t mipster(uint64_t* to_context) {
       return get_exit_code(from_context);
     else {
       // TODO: scheduler should go here
-	  if (get_next_context(to_context) == (uint64_t *) 0) {
-		to_context = used_contexts;
-	  } else if (get_status(to_context) == STATUS_FREED) {
-		to_context = used_contexts;
-	  } else {  
-		while (get_blocked (to_context) == 1) {	// Skip blocked contexts
-		 to_context = get_next_context (to_context);
+      if (get_next_context(to_context) == (uint64_t *) 0) {
+        to_context = used_contexts;
+      } else if (get_status(to_context) == STATUS_FREED) {
+        to_context = used_contexts;
+      } else {  
+      while (get_blocked (to_context) == 1) {	// Skip blocked contexts
+      to_context = get_next_context (to_context);
 
-	      if (to_context == (uint64_t *)0)
-    	    to_context = used_contexts;
- 
-	  	}
-	  }
+          if (to_context == (uint64_t *)0)
+            to_context = used_contexts;
+  
+        }
+      }
 
 	  //to_context = from_context;
       timeout = TIMESLICE;

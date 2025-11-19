@@ -4,6 +4,8 @@ uint64_t stock;
 
 uint64_t main () {
 	stock = 0;
+	lock = malloc (sizeof (uint64_t));
+	restock = malloc (sizeof (uint64_t));
 	lock_init (lock);
 	cond_init (restock);
 
