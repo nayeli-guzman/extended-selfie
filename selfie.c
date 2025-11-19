@@ -216,8 +216,6 @@ uint64_t* zmalloc(uint64_t size); // use this to allocate zeroed memory
 
 char* SELFIE_URL = (char*) 0;
 
-uint64_t seed = 5; //random seed
-
 uint64_t IS64BITSYSTEM = 1; // flag indicating 64-bit selfie
 uint64_t IS64BITTARGET = 1; // flag indicating 64-bit target
 
@@ -2045,11 +2043,6 @@ uint64_t TIMESLICE = 100000;
 uint64_t TIMEROFF = 0; // must be 0 to turn off timer interrupt
 
 // ------------------------ GLOBAL VARIABLES -----------------------
-
-//random global struct
-uint64_t* random = (uint64_t *)0;
-
-
 // hardware thread state
 
 uint64_t pc = 0; // program counter
@@ -2464,37 +2457,6 @@ void set_sem_waiters (uint64_t *sem, uint64_t *waiters) { *(sem + 2) = (uint64_t
 
 uint64_t create_semaphore(uint64_t value);
 
-
-// random global struct
-// +---+--------------------+
-// | 0 | pos				| pos of next random number
-// | 1 | n_numbers			| array of random numbers
-// +---+--------------------+
-//size of random numbers defined in global constant 
-uint64_t RANDOM_ENTRIES = 2;
-uint64_t RANDOM_NUMBERS_LENGTH = 10; //max random numbers to generate, after that it will start from the beggining
-uint64_t get_next_random_pos(){return *(random);}
-uint64_t *get_random_number_arr(){return (uint64_t *) *(random + 1);}
-
-void set_next_random_pos(){*(random) = (*(random) + 1)%RANDOM_NUMBERS_LENGTH;}
-void set_random_number_arr(uint64_t m){ //m is N_CONTEXTS, dynamically changes during exec
-  uint64_t a;
-  uint64_t c;
-  uint64_t i; 
-  uint64_t* random_arr;
-  a = 3;
-  c = 3;
-  m = 7;
-  random_arr = get_random_number_arr();
-  *(random_arr) = seed;
-  i = 1;
-  while(i < RANDOM_NUMBERS_LENGTH){
-    *(random + i) = (*(random + i - 1) * a + c) % m; 
-      i++;
-
-  }
-}
-
 // LOCK STRUCT
 // +---+--------------------+
 // | 0 | semaphore				| id del semaforo
@@ -2589,6 +2551,16 @@ uint64_t next_lock_id = 0;
 //1 -> random
 //2 -> CFS
 uint64_t sched_mode = 0;
+//random
+uint64_t next_random_number = 5; //random process and init value is seed too
+
+void set_next_random_number(){ 
+  uint64_t a;
+  uint64_t c;
+  a = 3;
+  c = 3;
+  next_random_number = (next_random_number * a + c) % N_CONTEXTS;     
+}
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -2624,8 +2596,8 @@ uint64_t handle_exception(uint64_t* context);
 
 uint64_t mipster(uint64_t* to_context);
 uint64_t hypster(uint64_t* to_context);
-void rr_scheduler(uint64_t* to_context);
-void random_scheduler(uint64_t* to_context);
+uint64_t* rr_scheduler(uint64_t* to_context);
+// void random_scheduler(uint64_t* to_context);
 
 uint64_t mixter(uint64_t* to_context, uint64_t mix);
 
@@ -11885,7 +11857,6 @@ uint64_t* delete_context(uint64_t* context, uint64_t* from) {
   free_context(context);
 
   N_CONTEXTS = N_CONTEXTS - 1;
-  set_random_number_arr(N_CONTEXTS); //recalculate random numbers for random scheduler
   return from;
 }
 
@@ -12030,7 +12001,6 @@ uint64_t* create_context(uint64_t* parent, uint64_t* vctxt) {
       get_name(parent), get_name(used_contexts));
 
   N_CONTEXTS = N_CONTEXTS + 1;
-  set_random_number_arr(N_CONTEXTS); //RECALCULATE rand numbers for scheduler
   return context;
 }
 
@@ -12764,7 +12734,7 @@ uint64_t handle_exception(uint64_t* context) {
   }
 }
 
-void rr_scheduler(uint64_t* to_context){
+uint64_t* rr_scheduler(uint64_t* to_context){
   if (get_next_context(to_context) == (uint64_t *) 0) {
         to_context = used_contexts;
       } else if (get_status(to_context) == STATUS_FREED) {
@@ -12778,6 +12748,7 @@ void rr_scheduler(uint64_t* to_context){
   
         }
       }
+      return to_context;
 
 }
 
@@ -12804,7 +12775,7 @@ uint64_t mipster(uint64_t* to_context) {
       return get_exit_code(from_context);
     else {
       if(sched_mode == 0){
-        rr_scheduler(to_context);
+        to_context = rr_scheduler(to_context);
       }
       
 	  //to_context = from_context;
@@ -13123,8 +13094,7 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   }
 
   thread_groups = (uint64_t*) zmalloc(sizeof(uint64_t) * MAX_CONTEXTS);
-  thread_group_ctr = zmalloc(sizeof(uint64_t) * MAX_CONTEXTS);
-
+  thread_group_ctr = zmalloc(sizeof(uint64_t) * MAX_CONTEXTS);  
   current_context = create_context(MY_CONTEXT, 0);
   boot_loader(current_context);
   set_is_leader(current_context, 1);
@@ -13152,7 +13122,6 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   // current_context is ready to run
 
   run = 1;
-  random = smalloc(RANDOM_NUMBERS_LENGTH * sizeof(uint64_t) * RANDOM_ENTRIES);
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
   used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
   used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
