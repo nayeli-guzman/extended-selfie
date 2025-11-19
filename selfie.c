@@ -8004,12 +8004,10 @@ void implement_cond_wait (uint64_t *context) {
   // curr_context_id = get_pid(current_context);
   sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);
   set_sem_value(sem,get_sem_value(sem) + 1);
-
-  //TO DO
   
   //add to waiters this process
-  set_cond_n_waiters(cond, get_cond_n_waiters(cond) + 1);
   *(get_cond_waiters (cond) + get_cond_n_waiters (cond)) = get_pid (context); //append to end
+  set_cond_n_waiters(cond, get_cond_n_waiters(cond) + 1);
   set_blocked(context, 1);
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 }
@@ -8041,14 +8039,15 @@ void implement_cond_signal (uint64_t *context) {
   n = get_cond_n_waiters(cond);
   //wake up one process only if there are waiters
   if(n>0){
-    //rm to waiters this process
+    //rm to waiters this process FIFO
     set_cond_n_waiters(cond, get_cond_n_waiters(cond) - 1);
     wake_pid = *(get_cond_waiters (cond) + get_cond_n_waiters (cond));
     set_blocked(find_context_by_id(wake_pid), 0);
+    // set_blocked(context, 1);
   }  
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 }
-//LIFO
+
 void implement_write(uint64_t* context) {
   // parameters
   uint64_t fd;
