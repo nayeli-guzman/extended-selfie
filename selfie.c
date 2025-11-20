@@ -2230,6 +2230,7 @@ uint64_t* find_context(uint64_t* parent, uint64_t* vctxt);
 void      free_context(uint64_t* context);
 uint64_t* delete_context(uint64_t* context, uint64_t* from);
 uint64_t *find_context_by_id(uint64_t id);
+uint64_t *get_context_n(uint64_t n);
 
 void block_context(uint64_t* context);
 void unblock_context(uint64_t* context);
@@ -2554,12 +2555,13 @@ uint64_t sched_mode = 0;
 //random
 uint64_t next_random_number = 5; //random process and init value is seed too
 
-void set_next_random_number(){ 
+uint64_t get_next_random_number(){ 
   uint64_t a;
   uint64_t c;
   a = 3;
   c = 3;
-  next_random_number = (next_random_number * a + c) % N_CONTEXTS;     
+  next_random_number = (next_random_number * a + c) % N_CONTEXTS;    
+  return next_random_number; 
 }
 
 // ------------------------- INITIALIZATION ------------------------
@@ -2597,7 +2599,7 @@ uint64_t handle_exception(uint64_t* context);
 uint64_t mipster(uint64_t* to_context);
 uint64_t hypster(uint64_t* to_context);
 uint64_t* rr_scheduler(uint64_t* to_context);
-// void random_scheduler(uint64_t* to_context);
+uint64_t* random_scheduler(uint64_t* to_context);
 
 uint64_t mixter(uint64_t* to_context, uint64_t mix);
 
@@ -11860,6 +11862,18 @@ uint64_t* delete_context(uint64_t* context, uint64_t* from) {
   return from;
 }
 
+uint64_t *get_context_n(uint64_t n){
+  uint64_t i;
+  uint64_t curr;
+  curr = get_used_list_head(current_context);
+  i = 0;
+  while(i < n){
+    curr = get_next_context(curr);
+    i++;
+  }
+  return curr;
+}
+
 uint64_t *find_context_by_id (uint64_t id) {
 	uint64_t *cur;
 
@@ -12752,10 +12766,22 @@ uint64_t* rr_scheduler(uint64_t* to_context){
 
 }
 
-// void random_scheduler(uint64_t* to_context){
-//   //TO DO..
-//   to_;
-// }
+uint64_t* random_scheduler(uint64_t* to_context){
+if (get_context_n(get_next_random_number()) == (uint64_t *) 0) {
+        to_context = used_contexts;
+      } else if (get_status(to_context) == STATUS_FREED) {
+        to_context = used_contexts;
+      } else {  
+      while (get_blocked (to_context) == 1) {	// Skip blocked contexts
+      to_context = get_context_n(get_next_random_number());
+
+          if (to_context == (uint64_t *)0)
+            to_context = used_contexts;
+  
+        }
+      }
+    return to_context;
+}
 
 uint64_t mipster(uint64_t* to_context) {
   uint64_t timeout;
@@ -12776,6 +12802,9 @@ uint64_t mipster(uint64_t* to_context) {
     else {
       if(sched_mode == 0){
         to_context = rr_scheduler(to_context);
+      }
+      else if(sched_mode == 1){
+        to_context = random_scheduler(to_context);
       }
       
 	  //to_context = from_context;
