@@ -11864,12 +11864,12 @@ uint64_t* delete_context(uint64_t* context, uint64_t* from) {
 
 uint64_t *get_context_n(uint64_t n){
   uint64_t i;
-  uint64_t curr;
+  uint64_t* curr;
   curr = get_used_list_head(current_context);
   i = 0;
   while(i < n){
     curr = get_next_context(curr);
-    i++;
+    i=i+1;
   }
   return curr;
 }
