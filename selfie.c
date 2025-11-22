@@ -212,6 +212,10 @@ void zero_memory(uint64_t* memory, uint64_t size);
 uint64_t* zalloc(uint64_t size);  // internal use only!
 uint64_t* zmalloc(uint64_t size); // use this to allocate zeroed memory
 
+uint64_t* get_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix){
+  return (uint64_t *)*(matrix + 512*i + j * LOCKNODEENTRIES);
+}
+
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
 char* SELFIE_URL = (char*) 0;
@@ -2282,7 +2286,7 @@ void unblock_context(uint64_t* context);
 // | 39 | tg				| thread group id
 // | 40 | tg_next		| get next thread in tg list
 // | 41 | blocked		| proces is blocked
-// | 42 | p_locks | list of lock ids that process owns
+// | 42 | p_locks | lock ids list head that process owns
 // | 43 | n_locks | number of locks owned
 
 // number of entries of a machine context:
@@ -2472,15 +2476,74 @@ uint64_t create_semaphore(uint64_t value);
 
 uint64_t LOCKENTRIES = 2;
 uint64_t get_lock_sem(uint64_t *lock) { return *(lock); }
-uint64_t get_lock_owner(uint64_t *lock) { return *(lock + 1); }
+uint64_t get_lock_owner(uint64_t *lock) { return(uint64_t *) *(lock + 1); }
 
 void set_lock_sem(uint64_t *lock, uint64_t sem) { *(lock) = sem; }
 void set_lock_owner(uint64_t *lock, uint64_t owner) { *(lock + 1) = owner; }
 
 uint64_t create_lock();
 
+//LOCK NODE STRUCT used for list inside processes
+// +---+--------------------+
+// | 0 | lock id				| id del lock
+// | 1 | prev lock				| prev lock
+// | 2 | next lock	      | next lock
+// +---+--------------------+
+uint64_t LOCKNODEENTRIES = 3;
+uint64_t get_lock_node_id(uint64_t *node){return *(node);}
+uint64_t* get_prev_lock_node(uint64_t* node){return (uint64_t *)*(node + 1);}
+uint64_t* get_next_lock_node(uint64_t* node){return (uint64_t *) *(node + 2);}
 
+uint64_t* allocate_lock_node() {
+  return smalloc(LOCKNODEENTRIES * sizeof(uint64_t));
+}
 
+void set_lock_node_id(uint64_t *node, uint64_t id){*(node) = id;}
+void set_prev_lock_node(uint64_t* node, uint64_t* prev){*(node + 1) = (uint64_t) prev;}
+void set_next_lock_node(uint64_t* node, uint64_t* next){*(node + 2) = (uint64_t) next;}
+
+void add_lock_to_process(uint64_t *context, uint64_t lock_id) {
+  uint64_t *head = get_p_locks(context);
+  uint64_t *node = allocate_lock_node();
+
+  set_lock_node_id(node, lock_id);
+  set_prev_lock_node(node, (uint64_t*) 0);
+  set_next_lock_node(node, head);
+
+  if (head != (uint64_t*) 0)
+    set_prev_lock_node(head, node);
+
+  set_p_locks(context, node);
+  set_n_locks(context, get_n_locks(context) + 1);
+}
+
+// remove first node with matching lock_id; returns 1 if removed, 0 otherwise
+uint64_t remove_lock_from_process(uint64_t *context, uint64_t lock_id) {
+  uint64_t *n = get_p_locks(context);
+
+  while (n != (uint64_t*) 0) {
+    if (get_lock_node_id(n) == lock_id) {
+      uint64_t *prev = get_prev_lock_node(n);
+      uint64_t *next = get_next_lock_node(n);
+
+      if (prev != (uint64_t*) 0)
+        set_next_lock_node(prev, next);
+      else
+        // removing head
+        set_p_locks(context, next);
+
+      if (next != (uint64_t*) 0)
+        set_prev_lock_node(next, prev);
+
+      // optionally: zero node memory or leave for GC
+      set_n_locks(context, get_n_locks(context) - 1);
+      return 1;
+    }
+    n = get_next_lock_node(n);
+  }
+
+  return 0;
+}
 
 // cond variable
 // +---+--------------------+
@@ -2552,6 +2615,9 @@ uint64_t next_cond_id = 0;
 // LOCK
 uint64_t* used_locks = (uint64_t*) 0; // array of locks
 uint64_t next_lock_id = 0;
+
+//
+uint64_t* lock_dep = (uint64_t*) 0;
 
 //scheduler mode: 
 //0 -> rr
@@ -11829,7 +11895,10 @@ void init_context(uint64_t* context, uint64_t* parent, uint64_t* vctxt) {
 
   set_status(context, STATUS_READY);
   set_nchildren(context, 0);
-  set_p_locks(context, smalloc(sizeof (uint64_t) * 512)); //list of lock id owned
+  // p_locks is a pointer to the head of a doubly-linked list of LOCKNODE entries
+  // initialize to empty list (NULL head)
+  set_p_locks(context, (uint64_t*) 0);
+   set_n_locks(context,0);
 }
 
 uint64_t* find_context(uint64_t* parent, uint64_t* vctxt) {
@@ -13163,6 +13232,7 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
   used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
   used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
+  lock_dep        = smalloc (sizeof (uint64_t *) * 512 * 512 * LOCKNODEENTRIES); //512x512 matrix
   
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
     SIZEOFUINT64INBITS,
