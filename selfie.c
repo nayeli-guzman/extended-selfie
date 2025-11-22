@@ -2282,11 +2282,13 @@ void unblock_context(uint64_t* context);
 // | 39 | tg				| thread group id
 // | 40 | tg_next		| get next thread in tg list
 // | 41 | blocked		| proces is blocked
+// | 42 | p_locks | list of lock ids that process owns
+// | 43 | n_locks | number of locks owned
 
 // number of entries of a machine context:
-// 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries
+// 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries + 1 uint64_t* list of locks
 // extended in the symbolic execution engine and the Boehm garbage collector
-uint64_t CONTEXTENTRIES = 42;
+uint64_t CONTEXTENTRIES = 44;
 uint64_t MAX_CONTEXTS = 32768;
 uint64_t N_CONTEXTS = 0;
 uint64_t* RUNNING = (uint64_t*) 0;
@@ -2393,6 +2395,8 @@ uint64_t get_is_leader (uint64_t* context) { return *(context + 38); }
 uint64_t get_tg(uint64_t* context) { return *(context + 39); }
 uint64_t* get_tg_next(uint64_t* context) { return (uint64_t*) *(context + 40); }
 uint64_t get_blocked(uint64_t *context) { return *(context + 41); }
+uint64_t* get_p_locks(uint64_t* context){ return (uint64_t*) *(context + 42); }
+uint64_t get_n_locks(uint64_t* context){ return *(context + 43);}
 
 void set_next_context(uint64_t* context, uint64_t* next)     { *context        = (uint64_t) next; }
 void set_prev_context(uint64_t* context, uint64_t* prev)     { *(context + 1)  = (uint64_t) prev; }
@@ -2438,6 +2442,8 @@ void set_is_leader(uint64_t* context, uint64_t is_leader) { *(context + 38) = is
 void set_tg(uint64_t* context, uint64_t tg) { *(context + 39) = tg; }
 void set_tg_next(uint64_t* context, uint64_t* next) { *(context + 40) = (uint64_t) next; }
 void set_blocked(uint64_t *context, uint64_t blocked) { *(context + 41) = blocked; }
+void set_p_locks(uint64_t *context, uint64_t* p_locks){*(context + 42) = (uint64_t) p_locks;}
+void set_n_locks(uint64_t *context, uint64_t n){*(context + 43) = n;}
 
 // semaphore
 // +---+--------------------+
@@ -8747,6 +8753,7 @@ void implement_lock_acquire (uint64_t *context) {
   uint64_t owner_id;
   uint64_t *lock;
   uint64_t *sem;
+  uint64_t *p_locks;
 
   lock_id_address = *(get_regs (context) + REG_A0);
   lock_id = load_virtual_memory (get_pt (context), lock_id_address);
@@ -11822,6 +11829,7 @@ void init_context(uint64_t* context, uint64_t* parent, uint64_t* vctxt) {
 
   set_status(context, STATUS_READY);
   set_nchildren(context, 0);
+  set_p_locks(context, smalloc(sizeof (uint64_t) * 512)); //list of lock id owned
 }
 
 uint64_t* find_context(uint64_t* parent, uint64_t* vctxt) {
@@ -12015,7 +12023,7 @@ uint64_t* create_context(uint64_t* parent, uint64_t* vctxt) {
     printf("%s: parent context %s created child context %s\n", selfie_name,
       get_name(parent), get_name(used_contexts));
 
-  N_CONTEXTS = N_CONTEXTS + 1;
+  N_CONTEXTS = N_CONTEXTS + 1; 
   return context;
 }
 
