@@ -8744,7 +8744,7 @@ void implement_lock_acquire (uint64_t *context) {
   uint64_t lock_id_address;
   uint64_t lock_id;
   uint64_t sem_id;
-  // uint64_t owner_id;
+  uint64_t owner_id;
   uint64_t *lock;
   uint64_t *sem;
 
@@ -8753,7 +8753,7 @@ void implement_lock_acquire (uint64_t *context) {
   lock = used_locks + (lock_id * LOCKENTRIES);
   
   sem_id = get_lock_sem(lock);
-  // owner_id = get_lock_owner(lock);
+  owner_id = get_lock_owner(lock);
 
   sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);  
 
@@ -8763,6 +8763,7 @@ void implement_lock_acquire (uint64_t *context) {
 //    *(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
   } else {
       set_sem_value(sem, get_sem_value(sem) - 1); // 0
+      set_lock_owner(lock, owner_id);
   }
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 
@@ -8805,8 +8806,8 @@ void implement_lock_release (uint64_t *context) {
     // solo se salta la instrucción
   } else {
   	set_sem_value (sem, get_sem_value (sem) + 1);
+    set_lock_owner(lock, (uint64_t) -1);
   }
-
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 }
 // -----------------------------------------------------------------
@@ -11963,17 +11964,17 @@ uint64_t create_lock () {
 	uint64_t *lock;
 	uint64_t lock_id;
 	uint64_t sem_id;
-  uint64_t context_id;
+  // uint64_t context_id;
 
 	lock_id = next_lock_id;
 	next_lock_id = next_lock_id + 1;
 	lock = used_locks + (lock_id * LOCKENTRIES);
 
   sem_id = create_semaphore(1);
-  context_id = get_pid(current_context);
+  // context_id = get_pid(current_context);
 
 	set_lock_sem(lock, sem_id);
-	set_lock_owner(lock, context_id);
+	set_lock_owner(lock, -1);
 
 	return lock_id;
 }
