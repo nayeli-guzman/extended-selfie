@@ -2510,10 +2510,10 @@ void add_lock_to_process(uint64_t *context, uint64_t lock_id) {
   set_prev_lock_node(node, (uint64_t*) 0);
   set_next_lock_node(node, head);
 
-  if (head != (uint64_t*) 0)
+  if (head != (uint64_t*) 0) //if head isnt empty, connect prev head with next-to-be head
     set_prev_lock_node(head, node);
 
-  set_p_locks(context, node);
+  set_p_locks(context, node);//make node the head
   set_n_locks(context, get_n_locks(context) + 1);
 }
 
@@ -2529,7 +2529,7 @@ uint64_t remove_lock_from_process(uint64_t *context, uint64_t lock_id) {
       if (prev != (uint64_t*) 0)
         set_next_lock_node(prev, next);
       else
-        // removing head
+        //if no prev, then it is head
         set_p_locks(context, next);
 
       if (next != (uint64_t*) 0)
