@@ -212,8 +212,14 @@ void zero_memory(uint64_t* memory, uint64_t size);
 uint64_t* zalloc(uint64_t size);  // internal use only!
 uint64_t* zmalloc(uint64_t size); // use this to allocate zeroed memory
 
-uint64_t* get_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix){
-  return (uint64_t *)*(matrix + 512*i + j * LOCKNODEENTRIES);
+uint64_t get_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix) {
+  if (matrix == (uint64_t*)0) return 0;
+  return *(matrix + 512 * i + j);
+}
+
+void put_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix, uint64_t val) {
+  if (matrix == (uint64_t*)0) return;
+  *(matrix + 512 * i + j) = val;
 }
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
@@ -2618,6 +2624,10 @@ uint64_t next_lock_id = 0;
 
 //
 uint64_t* lock_dep = (uint64_t*) 0;
+uint64_t* bfs_visited = (uint64_t*) 0;
+uint64_t* bfs_queue = (uint64_t*) 0;
+
+
 
 //scheduler mode: 
 //0 -> rr
@@ -2714,6 +2724,68 @@ uint64_t EXITCODE_UNKNOWNSYSCALL         = 24;
 uint64_t EXITCODE_UNSUPPORTEDSYSCALL     = 25;
 uint64_t EXITCODE_MULTIPLEEXCEPTIONERROR = 26;
 uint64_t EXITCODE_UNCAUGHTEXCEPTION      = 27;
+
+uint64_t has_path(uint64_t from, uint64_t to) {
+  uint64_t head;
+  uint64_t tail;
+  uint64_t current;
+  uint64_t i;
+
+  if (from == to) return 1;
+  if (lock_dep == (uint64_t*) 0) return 0;
+
+  // Reset visited
+  zero_memory(bfs_visited, 512 * sizeof(uint64_t));
+
+  head = 0;
+  tail = 0;
+
+  *(bfs_queue + tail) = from;
+  tail = tail + 1;
+  *(bfs_visited + from) = 1;
+
+  while (head < tail) {
+    current = *(bfs_queue + head);
+    head = head + 1;
+
+    if (current == to) return 1;
+
+    i = 0;
+    while (i < 512) {
+      if (get_lock_dep_elem(current, i, lock_dep)) {
+        if (*(bfs_visited + i) == 0) {
+          if (i == to) return 1;
+          *(bfs_visited + i) = 1;
+          *(bfs_queue + tail) = i;
+          tail = tail + 1;
+        }
+      }
+      i = i + 1;
+    }
+  }
+  return 0;
+}
+
+void check_deadlock(uint64_t new_lock_id, uint64_t* context) {
+  uint64_t* node;
+  uint64_t held_lock_id;
+
+  node = get_p_locks(context);
+
+  while (node != (uint64_t*) 0) {
+    held_lock_id = get_lock_node_id(node);
+
+    if (has_path(new_lock_id, held_lock_id)) {
+      printf("DEADLOCK DETECTED: Cycle found when acquiring lock %lu while holding lock %lu\n", new_lock_id, held_lock_id);
+      exit(EXITCODE_SYSTEMERROR);
+    }
+
+    // Add edge held_lock -> new_lock
+    put_lock_dep_elem(held_lock_id, new_lock_id, lock_dep, 1);
+
+    node = get_next_lock_node(node);
+  }
+}
 
 uint64_t SYSCALL_BITWIDTH = 32; // integer bit width for system calls
 
@@ -8819,7 +8891,7 @@ void implement_lock_acquire (uint64_t *context) {
   uint64_t owner_id;
   uint64_t *lock;
   uint64_t *sem;
-  uint64_t *p_locks;
+
 
   lock_id_address = *(get_regs (context) + REG_A0);
   lock_id = load_virtual_memory (get_pt (context), lock_id_address);
@@ -8838,6 +8910,8 @@ void implement_lock_acquire (uint64_t *context) {
       set_sem_value(sem, get_sem_value(sem) - 1); // 0
       set_lock_owner(lock, owner_id);
   }
+  check_deadlock(lock_id, context);
+  add_lock_to_process(context, lock_id);
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 
 }
@@ -13232,7 +13306,9 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
   used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
   used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
-  lock_dep        = smalloc (sizeof (uint64_t *) * 512 * 512 * LOCKNODEENTRIES); //512x512 matrix
+  lock_dep        = smalloc (sizeof (uint64_t *) * 512 * 512); //512x512 matrix
+  bfs_visited     = smalloc (sizeof (uint64_t) * 512);
+  bfs_queue       = smalloc (sizeof (uint64_t) * 512);
   
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
     SIZEOFUINT64INBITS,
