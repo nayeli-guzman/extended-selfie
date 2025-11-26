@@ -212,6 +212,16 @@ void zero_memory(uint64_t* memory, uint64_t size);
 uint64_t* zalloc(uint64_t size);  // internal use only!
 uint64_t* zmalloc(uint64_t size); // use this to allocate zeroed memory
 
+uint64_t get_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix) {
+  if (matrix == (uint64_t*)0) return 0;
+  return *(matrix + 512 * i + j);
+}
+
+void put_lock_dep_elem(uint64_t i, uint64_t j, uint64_t* matrix, uint64_t val) {
+  if (matrix == (uint64_t*)0) return;
+  *(matrix + 512 * i + j) = val;
+}
+
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
 char* SELFIE_URL = (char*) 0;
@@ -2289,11 +2299,13 @@ void unblock_context(uint64_t* context);
 // | 39 | tg				| thread group id
 // | 40 | tg_next		| get next thread in tg list
 // | 41 | blocked		| proces is blocked
+// | 42 | p_locks | lock ids list head that process owns
+// | 43 | n_locks | number of locks owned
 
 // number of entries of a machine context:
-// 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries
+// 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries + 1 uint64_t* list of locks
 // extended in the symbolic execution engine and the Boehm garbage collector
-uint64_t CONTEXTENTRIES = 42;
+uint64_t CONTEXTENTRIES = 44;
 uint64_t MAX_CONTEXTS = 32768;
 uint64_t N_CONTEXTS = 0;
 uint64_t* RUNNING = (uint64_t*) 0;
@@ -2400,6 +2412,8 @@ uint64_t get_is_leader (uint64_t* context) { return *(context + 38); }
 uint64_t get_tg(uint64_t* context) { return *(context + 39); }
 uint64_t* get_tg_next(uint64_t* context) { return (uint64_t*) *(context + 40); }
 uint64_t get_blocked(uint64_t *context) { return *(context + 41); }
+uint64_t* get_p_locks(uint64_t* context){ return (uint64_t*) *(context + 42); }
+uint64_t get_n_locks(uint64_t* context){ return *(context + 43);}
 
 void set_next_context(uint64_t* context, uint64_t* next)     { *context        = (uint64_t) next; }
 void set_prev_context(uint64_t* context, uint64_t* prev)     { *(context + 1)  = (uint64_t) prev; }
@@ -2445,6 +2459,8 @@ void set_is_leader(uint64_t* context, uint64_t is_leader) { *(context + 38) = is
 void set_tg(uint64_t* context, uint64_t tg) { *(context + 39) = tg; }
 void set_tg_next(uint64_t* context, uint64_t* next) { *(context + 40) = (uint64_t) next; }
 void set_blocked(uint64_t *context, uint64_t blocked) { *(context + 41) = blocked; }
+void set_p_locks(uint64_t *context, uint64_t* p_locks){*(context + 42) = (uint64_t) p_locks;}
+void set_n_locks(uint64_t *context, uint64_t n){*(context + 43) = n;}
 
 // semaphore
 // +---+--------------------+
@@ -2473,15 +2489,74 @@ uint64_t create_semaphore(uint64_t value);
 
 uint64_t LOCKENTRIES = 2;
 uint64_t get_lock_sem(uint64_t *lock) { return *(lock); }
-uint64_t get_lock_owner(uint64_t *lock) { return *(lock + 1); }
+uint64_t get_lock_owner(uint64_t *lock) { return(uint64_t *) *(lock + 1); }
 
 void set_lock_sem(uint64_t *lock, uint64_t sem) { *(lock) = sem; }
 void set_lock_owner(uint64_t *lock, uint64_t owner) { *(lock + 1) = owner; }
 
 uint64_t create_lock();
 
+//LOCK NODE STRUCT used for list inside processes
+// +---+--------------------+
+// | 0 | lock id				| id del lock
+// | 1 | prev lock				| prev lock
+// | 2 | next lock	      | next lock
+// +---+--------------------+
+uint64_t LOCKNODEENTRIES = 3;
+uint64_t get_lock_node_id(uint64_t *node){return *(node);}
+uint64_t* get_prev_lock_node(uint64_t* node){return (uint64_t *)*(node + 1);}
+uint64_t* get_next_lock_node(uint64_t* node){return (uint64_t *) *(node + 2);}
 
+uint64_t* allocate_lock_node() {
+  return smalloc(LOCKNODEENTRIES * sizeof(uint64_t));
+}
 
+void set_lock_node_id(uint64_t *node, uint64_t id){*(node) = id;}
+void set_prev_lock_node(uint64_t* node, uint64_t* prev){*(node + 1) = (uint64_t) prev;}
+void set_next_lock_node(uint64_t* node, uint64_t* next){*(node + 2) = (uint64_t) next;}
+
+void add_lock_to_process(uint64_t *context, uint64_t lock_id) {
+  uint64_t *head = get_p_locks(context);
+  uint64_t *node = allocate_lock_node();
+
+  set_lock_node_id(node, lock_id);
+  set_prev_lock_node(node, (uint64_t*) 0);
+  set_next_lock_node(node, head);
+
+  if (head != (uint64_t*) 0) //if head isnt empty, connect prev head with next-to-be head
+    set_prev_lock_node(head, node);
+
+  set_p_locks(context, node);//make node the head
+  set_n_locks(context, get_n_locks(context) + 1);
+}
+
+// remove first node with matching lock_id; returns 1 if removed, 0 otherwise
+uint64_t remove_lock_from_process(uint64_t *context, uint64_t lock_id) {
+  uint64_t *n = get_p_locks(context);
+
+  while (n != (uint64_t*) 0) {
+    if (get_lock_node_id(n) == lock_id) {
+      uint64_t *prev = get_prev_lock_node(n);
+      uint64_t *next = get_next_lock_node(n);
+
+      if (prev != (uint64_t*) 0)
+        set_next_lock_node(prev, next);
+      else
+        //if no prev, then it is head
+        set_p_locks(context, next);
+
+      if (next != (uint64_t*) 0)
+        set_prev_lock_node(next, prev);
+
+      // optionally: zero node memory or leave for GC
+      set_n_locks(context, get_n_locks(context) - 1);
+      return 1;
+    }
+    n = get_next_lock_node(n);
+  }
+
+  return 0;
+}
 
 // cond variable
 // +---+--------------------+
@@ -2553,6 +2628,13 @@ uint64_t next_cond_id = 0;
 // LOCK
 uint64_t* used_locks = (uint64_t*) 0; // array of locks
 uint64_t next_lock_id = 0;
+
+//
+uint64_t* lock_dep = (uint64_t*) 0;
+uint64_t* bfs_visited = (uint64_t*) 0;
+uint64_t* bfs_queue = (uint64_t*) 0;
+
+
 
 //scheduler mode: 
 //0 -> rr
@@ -2645,6 +2727,68 @@ uint64_t EXITCODE_UNKNOWNSYSCALL         = 24;
 uint64_t EXITCODE_UNSUPPORTEDSYSCALL     = 25;
 uint64_t EXITCODE_MULTIPLEEXCEPTIONERROR = 26;
 uint64_t EXITCODE_UNCAUGHTEXCEPTION      = 27;
+
+uint64_t has_path(uint64_t from, uint64_t to) {
+  uint64_t head;
+  uint64_t tail;
+  uint64_t current;
+  uint64_t i;
+
+  if (from == to) return 1;
+  if (lock_dep == (uint64_t*) 0) return 0;
+
+  // Reset visited
+  zero_memory(bfs_visited, 512 * sizeof(uint64_t));
+
+  head = 0;
+  tail = 0;
+
+  *(bfs_queue + tail) = from;
+  tail = tail + 1;
+  *(bfs_visited + from) = 1;
+
+  while (head < tail) {
+    current = *(bfs_queue + head);
+    head = head + 1;
+
+    if (current == to) return 1;
+
+    i = 0;
+    while (i < 512) {
+      if (get_lock_dep_elem(current, i, lock_dep)) {
+        if (*(bfs_visited + i) == 0) {
+          if (i == to) return 1;
+          *(bfs_visited + i) = 1;
+          *(bfs_queue + tail) = i;
+          tail = tail + 1;
+        }
+      }
+      i = i + 1;
+    }
+  }
+  return 0;
+}
+
+void check_deadlock(uint64_t new_lock_id, uint64_t* context) {
+  uint64_t* node;
+  uint64_t held_lock_id;
+
+  node = get_p_locks(context);
+
+  while (node != (uint64_t*) 0) {
+    held_lock_id = get_lock_node_id(node);
+
+    if (has_path(new_lock_id, held_lock_id)) {
+      printf("DEADLOCK DETECTED: Cycle found when acquiring lock %lu while holding lock %lu\n", new_lock_id, held_lock_id);
+      exit(EXITCODE_SYSTEMERROR);
+    }
+
+    // Add edge held_lock -> new_lock
+    put_lock_dep_elem(held_lock_id, new_lock_id, lock_dep, 1);
+
+    node = get_next_lock_node(node);
+  }
+}
 
 uint64_t SYSCALL_BITWIDTH = 32; // integer bit width for system calls
 
@@ -8779,6 +8923,7 @@ void implement_lock_acquire (uint64_t *context) {
   uint64_t *lock;
   uint64_t *sem;
 
+
   lock_id_address = *(get_regs (context) + REG_A0);
   lock_id = load_virtual_memory (get_pt (context), lock_id_address);
   lock = used_locks + (lock_id * LOCKENTRIES);
@@ -8798,6 +8943,8 @@ void implement_lock_acquire (uint64_t *context) {
       set_sem_value(sem, get_sem_value(sem) - 1); // 0
       set_lock_owner(lock, owner_id);
   }
+  check_deadlock(lock_id, context);
+  add_lock_to_process(context, lock_id);
   set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
 
 }
@@ -11880,6 +12027,10 @@ void init_context(uint64_t* context, uint64_t* parent, uint64_t* vctxt) {
 
   set_status(context, STATUS_READY);
   set_nchildren(context, 0);
+  // p_locks is a pointer to the head of a doubly-linked list of LOCKNODE entries
+  // initialize to empty list (NULL head)
+  set_p_locks(context, (uint64_t*) 0);
+   set_n_locks(context,0);
 }
 
 uint64_t* find_context(uint64_t* parent, uint64_t* vctxt) {
@@ -12073,7 +12224,7 @@ uint64_t* create_context(uint64_t* parent, uint64_t* vctxt) {
     printf("%s: parent context %s created child context %s\n", selfie_name,
       get_name(parent), get_name(used_contexts));
 
-  N_CONTEXTS = N_CONTEXTS + 1;
+  N_CONTEXTS = N_CONTEXTS + 1; 
   return context;
 }
 
@@ -13271,6 +13422,9 @@ uint64_t selfie_run(uint64_t machine, uint64_t nproc) {
   used_semaphores = smalloc (sizeof (uint64_t) * SEMAPHOREENTRIES * 512);
   used_locks      = smalloc (sizeof (uint64_t) * LOCKENTRIES * 512);
   used_cond       = smalloc (sizeof (uint64_t) * CONDENTRIES * 512);
+  lock_dep        = smalloc (sizeof (uint64_t *) * 512 * 512); //512x512 matrix
+  bfs_visited     = smalloc (sizeof (uint64_t) * 512);
+  bfs_queue       = smalloc (sizeof (uint64_t) * 512);
   
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
     SIZEOFUINT64INBITS,
