@@ -1323,6 +1323,9 @@ void implement_cond_init(uint64_t *context);
 void implement_cond_wait(uint64_t *context);
 void implement_cond_signal(uint64_t *context);
 
+void emit_scheduler();
+void implement_scheduler(uint64_t *context);
+
 uint64_t is_boot_level_zero();
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
@@ -1355,6 +1358,10 @@ uint64_t SYSCALL_LOCK_RELEASE = 227;
 uint64_t SYSCALL_COND_INIT = 768;
 uint64_t SYSCALL_COND_WAIT = 769;
 uint64_t SYSCALL_COND_SIGNAL = 770;
+
+uint64_t SYSCALL_SCHEDULER = 800;
+
+
 
 /* DIRFD_AT_FDCWD corresponds to AT_FDCWD in fcntl.h and
    is passed as first argument of the openat system call
@@ -2553,15 +2560,11 @@ uint64_t next_lock_id = 0;
 //2 -> CFS
 uint64_t sched_mode = 0;
 //random
-uint64_t next_random_number = 5; //random process and init value is seed too
+uint64_t next_random_number = 88172645463393265ULL; // seed ≠ 0
 
-uint64_t get_next_random_number(){ 
-  uint64_t a;
-  uint64_t c;
-  a = 3;
-  c = 3;
-  next_random_number = (next_random_number * a + c) % N_CONTEXTS;    
-  return next_random_number; 
+uint64_t get_next_random_number() {
+  next_random_number = next_random_number * 1103515245 + 12345;
+  return next_random_number;
 }
 
 // ------------------------- INITIALIZATION ------------------------
@@ -6511,6 +6514,8 @@ void selfie_compile() {
   emit_cond_wait();
   emit_cond_signal();
 
+  emit_scheduler();
+
   emit_open();
 
   emit_malloc();
@@ -8388,6 +8393,32 @@ void implement_fork(uint64_t* context) {
 	set_pc(context, get_pc (context) + INSTRUCTIONSIZE);
 }
 
+void emit_scheduler() {
+	create_symbol_table_entry(GLOBAL_TABLE, string_copy("scheduler"),
+	0, PROCEDURE, VOID_T, 1, code_size);
+
+  emit_load(REG_A1, REG_SP, 0);
+	emit_addi(REG_SP, REG_SP, WORDSIZE);
+
+	emit_addi(REG_A7, REG_ZR, SYSCALL_SCHEDULER);
+
+	emit_ecall();
+
+	emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_scheduler(uint64_t* context) {
+
+  uint64_t scheduler;
+
+	scheduler = *(get_regs(context) + REG_A1);
+
+  sched_mode = scheduler;
+
+	set_pc(context, get_pc (context) + INSTRUCTIONSIZE);
+}
+
+
 void emit_wait() {
 	create_symbol_table_entry(GLOBAL_TABLE, string_copy("wait"),
 	0, PROCEDURE, UINT64_T, 1, code_size);
@@ -8646,9 +8677,9 @@ void implement_sem_wait (uint64_t *context) {
   sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);
 
   if (get_sem_value (sem) == 0) {
-	set_blocked (context, 1);
-	set_sem_n_waiters (sem, get_sem_n_waiters (sem) + 1);
-	*(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
+	  set_blocked (context, 1);
+	  set_sem_n_waiters (sem, get_sem_n_waiters (sem) + 1);
+	  *(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
   } else {
     set_sem_value(sem, get_sem_value(sem) - 1);
   }
@@ -8753,14 +8784,16 @@ void implement_lock_acquire (uint64_t *context) {
   lock = used_locks + (lock_id * LOCKENTRIES);
   
   sem_id = get_lock_sem(lock);
-  owner_id = get_lock_owner(lock);
+  owner_id = get_pid(context);
+
+  // printf("Lock acquire called by context %lu on lock %lu owned by %lu\n", get_pid(context), lock_id, owner_id);
 
   sem = used_semaphores + (sem_id * SEMAPHOREENTRIES);  
 
   if (get_sem_value (sem) == 0) {
     set_blocked (context, 1);
-//    set_sem_n_waiters (sem, get_sem_n_waiters (sem) + 1);
-//    *(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
+    set_sem_n_waiters (sem, get_sem_n_waiters (sem) + 1);
+    *(get_sem_waiters (sem) + get_sem_n_waiters (sem)) = get_pid (context);
   } else {
       set_sem_value(sem, get_sem_value(sem) - 1); // 0
       set_lock_owner(lock, owner_id);
@@ -8784,32 +8817,54 @@ void emit_lock_release () {
 }
 
 void implement_lock_release (uint64_t *context) {
-  uint64_t lock_id_address;
-  uint64_t lock_id;
-  uint64_t curr_context_id;
-  uint64_t *lock;
-  uint64_t sem_id;
-  uint64_t owner_id;
-  uint64_t *sem;
+  uint64_t  lock_id_address;
+  uint64_t  lock_id;
+  uint64_t* lock;
+  uint64_t  sem_id;
+  uint64_t* sem;
+  uint64_t  owner_id;
+  uint64_t  curr_pid;
 
-  lock_id_address = *(get_regs (context) + REG_A0);
-  lock_id = load_virtual_memory (get_pt (context), lock_id_address);
-  lock = used_locks + (lock_id * LOCKENTRIES);
-  
-  sem_id = get_lock_sem(lock);
+  lock_id_address = *(get_regs(context) + REG_A0);
+  lock_id         = load_virtual_memory(get_pt(context), lock_id_address);
+  lock            = used_locks + lock_id * LOCKENTRIES;
+
+  sem_id   = get_lock_sem(lock);
   owner_id = get_lock_owner(lock);
-  curr_context_id = get_pid(current_context);
+  curr_pid = get_pid(context);   // aquí mejor usar el context que te pasan
 
-  sem = used_semaphores + (sem_id * SEMAPHOREENTRIES); 
+  sem = used_semaphores + sem_id * SEMAPHOREENTRIES;
 
-  if (owner_id != curr_context_id) {
-    // solo se salta la instrucción
-  } else {
-  	set_sem_value (sem, get_sem_value (sem) + 1);
-    set_lock_owner(lock, (uint64_t) -1);
+  if (owner_id != curr_pid) {
+    set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
+    return;
   }
-  set_pc (context, get_pc (context) + INSTRUCTIONSIZE);
+
+  // soy el dueño del lock
+  if (get_sem_n_waiters(sem) > 0) {
+    // hay alguien esperando → lo despierto
+    uint64_t waiter_pid;
+    uint64_t* waiter_ctx;
+
+    waiter_pid = *(get_sem_waiters(sem) + get_sem_n_waiters(sem));
+    set_sem_n_waiters(sem, get_sem_n_waiters(sem) - 1);
+
+    waiter_ctx = find_context_by_id(waiter_pid);  // o la función que tengas para buscar por PID
+
+    if (waiter_ctx != (uint64_t*) 0)
+      set_blocked(waiter_ctx, 0);
+
+    // normalmente aquí no subes sem_value,
+    // porque el lock pasa directamente al que despertaste
+  } else {
+    // nadie esperando → libero el lock aumentando el semáforo
+    set_sem_value(sem, get_sem_value(sem) + 1);
+  }
+
+  set_lock_owner(lock, (uint64_t) -1);
+  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
 }
+
 // -----------------------------------------------------------------
 // ------------------------ HYPSTER SYSCALL ------------------------
 // -----------------------------------------------------------------
@@ -10773,7 +10828,10 @@ void do_ecall() {
       implement_switch();
     }
     else {
-      if(*(registers + REG_A7) == SYSCALL_COND_INIT){
+      if (*(registers + REG_A7) == SYSCALL_SCHEDULER) {
+
+      }
+      else if(*(registers + REG_A7) == SYSCALL_COND_INIT){
         read_register(REG_A0);
       }
       else if(*(registers + REG_A7) == SYSCALL_COND_WAIT){
@@ -12655,6 +12713,8 @@ uint64_t handle_system_call(uint64_t* context) {
     implement_cond_signal(context);
   else if(a7 == SYSCALL_COND_WAIT)
     implement_cond_wait(context);
+  else if(a7 == SYSCALL_SCHEDULER)
+    implement_scheduler(context);
   else if (a7 == SYSCALL_EXIT) {
     implement_exit(context);
 
@@ -12767,22 +12827,78 @@ uint64_t* rr_scheduler(uint64_t* to_context){
 
 }
 
-uint64_t* random_scheduler(uint64_t* to_context){
-if (get_context_n(get_next_random_number()) == (uint64_t *) 0) {
-        to_context = used_contexts;
-      } else if (get_status(to_context) == STATUS_FREED) {
-        to_context = used_contexts;
-      } else {  
-      while (get_blocked (to_context) == 1) {	// Skip blocked contexts
-      to_context = get_context_n(get_next_random_number());
+// uint64_t* random_scheduler(uint64_t* to_context){
+//   if (get_context_n(get_next_random_number()) == (uint64_t *) 0) {
+//     to_context = used_contexts;
+//   } else if (get_status(to_context) == STATUS_FREED) {
+//     to_context = used_contexts;
+//   } else {  
+//     while (get_blocked (to_context) == 1) {	// Skip blocked contexts
+//       to_context = get_context_n(get_next_random_number());
+//       if (to_context == (uint64_t *)0)
+//         to_context = used_contexts;
+//       }
+//   }
+//    return to_context;
+// }
 
-          if (to_context == (uint64_t *)0)
-            to_context = used_contexts;
-  
-        }
+uint64_t* random_scheduler(uint64_t* to_context) {
+  uint64_t* ctx;
+  uint64_t  n_ready;
+  uint64_t  k;
+
+  ctx     = used_contexts;
+  n_ready = 0;
+
+  // printf("Ejecutando contexto numero: %lu\n", get_pid(to_context));
+
+  while (ctx != (uint64_t*) 0) {
+    if (get_status(ctx) != STATUS_FREED) {
+      if (get_blocked(ctx) == 0) {
+        // count number of ready contexts
+        // printf("Contexto libre numero: %lu\n", get_pid(ctx));
+
+        n_ready = n_ready + 1;
       }
-    return to_context;
+    }
+    ctx = get_next_context(ctx);
+  }
+
+  // printf("Number of ready contexts: %lu\n", n_ready);
+
+  if (n_ready == 0)
+    return to_context;   
+
+  k = get_next_random_number() % n_ready;
+
+  // printf("Random number k: %lu\n", k);
+
+  ctx = used_contexts;
+
+  while (ctx != (uint64_t*) 0) {
+    if (get_status(ctx) != STATUS_FREED) {
+      if (get_blocked(ctx) == 0) {
+        if (k == 0)
+          return ctx;
+        k = k - 1;
+      }
+    }
+    ctx = get_next_context(ctx);
+  }
+
+  ctx = used_contexts;
+  while (ctx != (uint64_t*) 0) {
+    if (get_status(ctx) != STATUS_FREED)
+      if (get_blocked(ctx) == 0)
+        return ctx;
+
+    ctx = get_next_context(ctx);
+  }
+
+  return to_context;
 }
+
+
 
 uint64_t mipster(uint64_t* to_context) {
   uint64_t timeout;
