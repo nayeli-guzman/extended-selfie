@@ -15,7 +15,7 @@ CFLAGS := -Wall -Wextra -g -D'uint64_t=unsigned long'
 
 # Bootstrap selfie.c into selfie executable
 selfie: selfie.c
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $< -o $@ -lSDL2
 
 # 32-bit compiler flags
 32-BIT-CFLAGS := -Wall -Wextra -Wno-builtin-declaration-mismatch -O3 -m32 -D'uint64_t=unsigned long'

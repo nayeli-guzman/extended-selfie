@@ -286,6 +286,20 @@ uint64_t S_IRUSR_IWUSR_IRGRP_IROTH = 420;
 // these flags also seem to be working for LINUX, MAC, and WINDOWS
 uint64_t S_IRUSR_IWUSR_IXUSR_IRGRP_IXGRP_IROTH_IXOTH = 493;
 
+/* I/O CONSTANTS | Direcciones MMIO*/
+
+uint64_t MMIO_FB_START       = 0xF0000000;  // dirección del framebuffer
+uint64_t MMIO_DRAW_REGISTER  = 0xEFFFFFF0;  // registro de control
+
+// Parámetros del framebuffer
+uint64_t MMIO_FB_WIDTH       = 320;
+uint64_t MMIO_FB_HEIGHT      = 200;
+uint64_t MMIO_FB_BPP         = 4;           // bytes por píxel
+
+uint64_t fb_window;    // aquí guardarás el puntero a la ventana
+uint64_t fb_renderer;  // puntero al renderer
+uint64_t fb_texture;   // puntero a la textura
+
 // ------------------------ GLOBAL VARIABLES -----------------------
 
 uint64_t number_of_written_characters = 0;
@@ -295,6 +309,54 @@ uint64_t output_fd   = 1; // standard output file descriptor
 
 char*    output_buffer = (char*) 0;
 uint64_t output_cursor = 0; // cursor for output buffer
+
+// -----------------------------------------------------------------
+// ----------------------- GRAPHICS (SDL2) -------------------------
+// -----------------------------------------------------------------
+
+uint64_t* sdl_window   = (uint64_t*) 0;
+uint64_t* sdl_renderer = (uint64_t*) 0;
+uint64_t* sdl_texture  = (uint64_t*) 0;
+uint64_t* framebuffer  = (uint64_t*) 0;
+
+uint64_t FB_WIDTH  = 64;
+uint64_t FB_HEIGHT = 64;
+uint64_t FB_START  = 2147483648; // 0x80000000 (2GB)
+uint64_t DRAW_REGISTER = 2147487744; // FB_START + 4096
+
+// SDL Declarations (Prototypes for Selfie, Linked for GCC)
+uint64_t SDL_Init(uint64_t flags);
+uint64_t* SDL_CreateWindow(char* title, int x, int y, int w, int h, uint64_t flags);
+uint64_t* SDL_CreateRenderer(uint64_t* window, int index, uint64_t flags);
+uint64_t* SDL_CreateTexture(uint64_t* renderer, uint64_t format, int access, int w, int h);
+uint64_t SDL_UpdateTexture(uint64_t* texture, uint64_t* rect, uint64_t* pixels, int pitch);
+uint64_t SDL_RenderClear(uint64_t* renderer);
+uint64_t SDL_RenderCopy(uint64_t* renderer, uint64_t* texture, uint64_t* src_rect, uint64_t* dst_rect);
+void SDL_RenderPresent(uint64_t* renderer);
+
+void init_graphics() {
+  if (sdl_window == (uint64_t*) 0) {
+     // SDL_INIT_VIDEO = 0x20 (32)
+     SDL_Init(32); 
+     // SDL_WINDOWPOS_UNDEFINED = 0x1FFF0000
+     // Scale 10x
+     sdl_window = SDL_CreateWindow("Selfie Emulator", 0x1FFF0000, 0x1FFF0000, FB_WIDTH * 10, FB_HEIGHT * 10, 0); 
+     sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 0);
+     // SDL_PIXELFORMAT_ARGB8888 = 372645892
+     // SDL_TEXTUREACCESS_STREAMING = 1
+     sdl_texture = SDL_CreateTexture(sdl_renderer, 372645892, 1, FB_WIDTH, FB_HEIGHT); 
+     framebuffer = smalloc(FB_WIDTH * FB_HEIGHT * 4);
+  }
+}
+
+void update_screen() {
+   if (sdl_window != (uint64_t*) 0) {
+       SDL_UpdateTexture(sdl_texture, (uint64_t*) 0, framebuffer, FB_WIDTH * 4);
+       SDL_RenderClear(sdl_renderer);
+       SDL_RenderCopy(sdl_renderer, sdl_texture, (uint64_t*) 0, (uint64_t*) 0);
+       SDL_RenderPresent(sdl_renderer);
+   }
+}
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -13512,6 +13574,7 @@ uint64_t exit_selfie(uint64_t exit_code, char* extras) {
 
 // selfie bootstraps int and char** to uint64_t and uint64_t*, respectively!
 int main(int argc, char** argv) {
+  init_graphics();
   uint64_t exit_code;
 
   init_selfie((uint64_t) argc, (uint64_t*) argv);
