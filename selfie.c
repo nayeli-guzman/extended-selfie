@@ -2548,7 +2548,6 @@ uint64_t remove_lock_from_process(uint64_t *context, uint64_t lock_id) {
       if (next != (uint64_t*) 0)
         set_prev_lock_node(next, prev);
 
-      // optionally: zero node memory or leave for GC
       set_n_locks(context, get_n_locks(context) - 1);
       return 1;
     }
@@ -2737,7 +2736,7 @@ uint64_t has_path(uint64_t from, uint64_t to) {
   if (from == to) return 1;
   if (lock_dep == (uint64_t*) 0) return 0;
 
-  // Reset visited
+  // reset to zero
   zero_memory(bfs_visited, 512 * sizeof(uint64_t));
 
   head = 0;
@@ -2779,11 +2778,11 @@ void check_deadlock(uint64_t new_lock_id, uint64_t* context) {
     held_lock_id = get_lock_node_id(node);
 
     if (has_path(new_lock_id, held_lock_id)) {
-      printf("DEADLOCK DETECTED: Cycle found when acquiring lock %lu while holding lock %lu\n", new_lock_id, held_lock_id);
+      printf("deadlock:  %lu -> %lu\n", new_lock_id, held_lock_id);
       exit(EXITCODE_SYSTEMERROR);
     }
 
-    // Add edge held_lock -> new_lock
+    // add used_lock -> new_lock
     put_lock_dep_elem(held_lock_id, new_lock_id, lock_dep, 1);
 
     node = get_next_lock_node(node);
